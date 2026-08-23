@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RBY1 Web Teleop</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0d0f14;
+            color: #d8dee9;
+            font-family: monospace;
+        }
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            z-index: 10;
+        }
+        #status {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+        }
+        #enterVrBtn {
+            font-size: 18px;
+            padding: 10px 24px;
+            background: #2e7d32;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        #enterVrBtn:active {
+            background: #1b5e20;
+        }
+        #hudOverlay {
+            position: absolute;
+            bottom: 12px;
+            left: 12px;
+            z-index: 10;
+            margin: 0;
+            font-size: 12px;
+            color: #9fe8a0;
+            background: rgba(10, 12, 18, 0.72);
+            padding: 8px 10px;
+            border-radius: 6px;
+            max-height: 45vh;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="renderCanvas"></canvas>
+    <div id="ui">
+        <p id="status">초기화 중...</p>
+        <button id="enterVrBtn" hidden>Enter VR</button>
+    </div>
+    <pre id="hudOverlay">(포즈 샘플 없음)</pre>
+
+    <!-- 오프라인 직결 환경 대비: Babylon.js·GLB 로더는 CDN이 아니라 로컬 번들로 로드 -->
+    <script src="vendor/babylon.js"></script>
+    <script src="vendor/babylonjs.loaders.min.js"></script>
+    <script type="module" src="src/main.js"></script>
+</body>
+</html>

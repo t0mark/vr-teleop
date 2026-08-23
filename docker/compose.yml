@@ -1,0 +1,34 @@
+# 프로젝트 이름 고정 (폴더명 기반 자동 이름이 타 프로젝트와 겹치는 것 방지)
+name: rby1-web-teleop
+
+services:
+  teleop:
+    container_name: airlab_hw_teleop
+    image: t0mark251/rby1-web-teleop:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # 로봇 gRPC(192.168.30.1)·Quest 직결·WebRTC ICE를 단순화하기 위해 호스트 네트워크 사용
+    network_mode: host
+    volumes:
+      # 저장소 루트 → /workspace
+      - ..:/workspace
+      # D455 접근: pyrealsense2 wheel은 V4L2 백엔드라 /dev/video*(UVC 노드)가 필요하고,
+      # 노드 번호가 재연결 때마다 바뀌므로 /dev 전체를 노출한다 (열 수 있는 장치는 아래 cgroup 규칙으로 제한)
+      - /dev:/dev
+    # USB(189)·V4L(81) 문자 장치만 접근 허용 (privileged 대신 최소 권한)
+    device_cgroup_rules:
+      - "c 189:* rmw"
+      - "c 81:* rmw"
+    # H.264 하드웨어 인코딩(NVENC) 등 GPU 사용 대비
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    stdin_open: true
+    tty: true
+    # 개발용 상시 기동 (작업은 exec로 진입)
+    command: ["sleep", "infinity"]

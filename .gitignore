@@ -1,0 +1,11 @@
+.claude/
+.vscode/
+__pycache__/
+
+oss/
+check/
+logs/
+web/certs/
+# agent.md
+# plan.md
+# code.md
