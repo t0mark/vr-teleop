@@ -29,13 +29,22 @@ class PointCloudBuilder:
         self._xn = (uu - intr.ppx) / intr.fx
         self._yn = (vv - intr.ppy) / intr.fy
 
-        # 합성 변환: p_w = A·p_c + b,  A = Cᵀ·R_cr,  b = Cᵀ·t_cr
-        # (R_cr, t_cr: 광학→로봇 외부 파라미터, Cᵀ: 로봇→WebXR 기저). 행 벡터 연산을 위해 전치해 둔다
+        # 로봇→WebXR 기저 변환은 상수이므로 미리 잡아 둔다
+        self._Ct = robot_points_to_webxr_matrix().astype(np.float32)
+        self.set_extrinsics(cam_pos, cam_rot)
+
+    def set_extrinsics(self, cam_pos: np.ndarray, cam_rot: np.ndarray):
+        """카메라 외부 파라미터를 갱신한다. 반환값 없음.
+
+        머리·토르소 관절이 움직이면 광학 프레임 포즈가 바뀌므로 프레임마다 다시 넣어야
+        누적 점군이 월드에서 어긋나지 않는다.
+        합성 변환: p_w = A·p_c + b,  A = Cᵀ·R_cr,  b = Cᵀ·t_cr
+        (R_cr, t_cr: 광학→로봇 외부 파라미터). 행 벡터 연산을 위해 A는 전치해 보관한다.
+        """
         R_cr = np.asarray(cam_rot, dtype=np.float32)
         t_cr = np.asarray(cam_pos, dtype=np.float32)
-        Ct = robot_points_to_webxr_matrix().astype(np.float32)
-        self._A_T = (Ct @ R_cr).T
-        self._b = Ct @ t_cr
+        self._A_T = (self._Ct @ R_cr).T
+        self._b = self._Ct @ t_cr
 
     @property
     def max_points(self) -> int:

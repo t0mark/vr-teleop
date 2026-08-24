@@ -12,6 +12,7 @@ import ssl
 from aiohttp import web
 
 from teleop.net.web_api.pose_hub import PoseHub
+from teleop.net.web_api.precompress import precompress_all
 from teleop.utils import config
 
 logger = logging.getLogger("web_api")
@@ -80,6 +81,9 @@ class WebAPIServer:
 
     async def start(self):
         """HTTPS 본 포트·443 별칭·HTTP 리다이렉트를 기동한다. 반환값 없음."""
+        # 벤더 JS·GLB는 무압축으로 보내면 첫 로드가 25 MB에 달한다. aiohttp가 집어 갈
+        # .gz 형제 파일을 미리 만들어 둔다 (web/src 같은 편집 잦은 경로는 제외)
+        precompress_all([config.WEB_ROOT / "vendor", config.WEB_ROOT / "assets", config.RBY1_MESH_DIR])
         ssl_ctx = self._build_ssl_context()
         runner = web.AppRunner(self._build_app())
         await runner.setup()

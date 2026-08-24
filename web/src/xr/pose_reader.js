@@ -2,9 +2,11 @@
 // 컨트롤러 손목(grip) 포즈, 트리거·그립·스틱 입력.
 // 좌표계: WebXR reference space(오른손, y-up), 단위 m. 쿼터니언은 (x, y, z, w).
 
-// IK 입력으로 쓸 상체 조인트만 추려서 표시·전송 대상으로 삼는다
+// 손가락 조인트(손마다 20여 개)만 제외하고 나머지 전신 조인트를 보낸다.
+// 몸통·머리·다리는 IK에 쓰지 않지만 데스크톱 뷰의 사람 아바타 자세에 필요하고,
+// 제외 후 20여 개 수준이라 대역폭도 문제되지 않는다.
 // (이름은 Meta WebXR Body Tracking 규약, 실기기 검증에서 확인)
-const ARM_JOINT_FILTER = ["shoulder", "arm", "elbow", "wrist", "scapula"];
+const FINGER_JOINT_PATTERN = /-(thumb|index|middle|ring|little|pinky)-/;
 
 export class PoseReader {
     /**
@@ -49,8 +51,8 @@ export class PoseReader {
 
         const joints = {};
         for (const [name, jointSpace] of body) {
-            // IK에 필요한 팔 관련 조인트만 유지 (풀바디 전체는 대역폭·표시 낭비)
-            if (!ARM_JOINT_FILTER.some((k) => name.includes(k))) continue;
+            // 손가락 마디는 버린다 (사용처가 없고 조인트 수가 몇 배로 늘어난다)
+            if (FINGER_JOINT_PATTERN.test(name)) continue;
             const pose = frame.getPose(jointSpace, refSpace);
             if (!pose) continue;
             const p = pose.transform.position;

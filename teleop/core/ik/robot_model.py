@@ -1,7 +1,15 @@
-"""RBY1 로봇 모델: URDF 로드·양팔 축소 모델·FK·시각화 메타데이터를 관리한다.
+"""RBY1 로봇 모델: URDF 로드, IK용 축소 모델, 시각화용 전체 모델 FK를 관리한다.
 
 좌표계: 모든 FK 출력은 로봇 base 프레임 (x=전방, y=좌, z=상, 단위 m).
-축소 모델: 양팔 14관절(arm_0-6 x2)만 자유, 나머지(바퀴·토르소·머리·그리퍼)는 ready pose로 고정.
+
+모델 두 벌을 함께 들고 있다.
+- 전체 모델(full): URDF 그대로(nq=30). **시각화·카메라 외부 파라미터는 전부 이쪽**을 쓴다.
+  실로봇에서 읽은 관절값(토르소·머리 포함)을 그대로 반영해야 하기 때문이다.
+- 축소 모델(reduced): 양팔 14관절만 자유, 나머지는 ready pose 고정. IK 최적화 전용이다.
+
+관절값 입출력은 항상 {관절명: 각도(rad)} 사전으로 주고받는다. pinocchio의 q 순서는
+모델 구성에 따라 달라지고(축소 모델은 left가 먼저) 연속 관절(바퀴)은 q를 2칸(cos·sin) 차지하므로,
+인덱스로 다루면 좌우가 뒤바뀌는 함정이 있다.
 """
 
 import logging
@@ -24,8 +32,7 @@ READY_LEFT_ARM_DEG = [0.0, 15.0, 0.0, -120.0, 0.0, 30.0, 0.0]
 # 0.4(약 23°)로 완화 — 카메라가 손 작업 공간과 전방을 함께 담는 각도
 READY_HEAD_RAD = [0.0, 0.4]
 
-# IK가 제어하는 관절. 주의: 축소 모델의 실제 q 순서는 pinocchio가 정하며(left 먼저임이 확인됨)
-# 이 리스트 순서와 다르다 — 모든 q 접근은 반드시 이름 기반(idx_q 조회)으로 할 것
+# IK가 제어하는 관절
 ARM_JOINT_NAMES = [f"right_arm_{i}" for i in range(7)] + [f"left_arm_{i}" for i in range(7)]
 
 # IK 코스트에 쓰는 프레임: 손목 목표는 그리퍼(ee) 프레임 — 플랜지(link_*_arm_6)를 쓰면
@@ -65,15 +72,16 @@ def _origin_to_webxr(origin_el) -> dict:
 
 
 class RobotModel:
-    """RBY1 축소 모델(양팔 14 DOF)과 FK·시각화 메타를 소유한다."""
+    """RBY1 전체 모델(시각화)과 축소 모델(IK), 그리고 두 모델의 FK를 소유한다."""
 
     def __init__(self, urdf_path=config.RBY1_URDF):
         self._urdf_path = urdf_path
         xml = load_fixed_urdf_xml(urdf_path)
-        full_model = pin.buildModelFromXML(xml)
 
-        # ready pose를 전체 모델 기준 벡터로 구성 (잠긴 관절은 이 값으로 고정된다)
-        q_ref = pin.neutral(full_model)
+        # 전체 모델: 시각화·카메라 외부 파라미터용. 실로봇 관절값을 그대로 반영한다
+        self.full_model = pin.buildModelFromXML(xml)
+        self.full_data = self.full_model.createData()
+
         ready_map = dict(
             zip(
                 [f"torso_{i}" for i in range(6)] + ARM_JOINT_NAMES + ["head_0", "head_1"],
@@ -83,24 +91,21 @@ class RobotModel:
                 ]),
             )
         )
-        for name, value in ready_map.items():
-            jid = full_model.getJointId(name)
-            q_ref[full_model.joints[jid].idx_q] = value
+        self._ready_map = ready_map
+        self.q_full_ready = self._build_q_full(ready_map)
 
-        # 양팔 외 전 관절을 잠가 14 DOF 축소 모델 생성 (잠긴 링크의 프레임은 유지됨 → FK 시각화 가능)
+        # 축소 모델: 양팔 외 전 관절을 ready로 잠근 14 DOF (잠긴 링크의 프레임은 유지됨)
         locked_ids = [
-            jid for jid in range(1, full_model.njoints)
-            if full_model.names[jid] not in ARM_JOINT_NAMES
+            jid for jid in range(1, self.full_model.njoints)
+            if self.full_model.names[jid] not in ARM_JOINT_NAMES
         ]
-        self.model = pin.buildReducedModel(full_model, locked_ids, q_ref)
+        self.model = pin.buildReducedModel(self.full_model, locked_ids, self.q_full_ready)
         self.data = self.model.createData()
 
         # ready pose에서의 팔 관절각 (IK 초기값·정규화 중심)
         self.q_ready = np.zeros(self.model.nq)
-        for name, value in ready_map.items():
-            if name in ARM_JOINT_NAMES:
-                jid = self.model.getJointId(name)
-                self.q_ready[self.model.joints[jid].idx_q] = value
+        for name in ARM_JOINT_NAMES:
+            self.q_ready[self.model.joints[self.model.getJointId(name)].idx_q] = ready_map[name]
 
         # IK 코스트용 프레임 id
         self.frame_ids = {
@@ -111,6 +116,54 @@ class RobotModel:
         self._visuals = self._parse_visuals(xml)
         self._fingers = self._parse_finger_joints(xml)
         self._log_geometry()
+
+    # ── 관절값 변환 ──────────────────────────────────────────────────────────
+
+    def _build_q_full(self, named: dict) -> np.ndarray:
+        """{관절명: 각도(rad)} 사전을 전체 모델 q 벡터로 변환해 반환한다.
+
+        사전에 없는 관절은 pin.neutral 값(0)을 유지한다. 연속 관절(바퀴)은 pinocchio가
+        q를 (cos θ, sin θ) 두 칸으로 표현하므로 nq에 따라 나눠 채운다.
+        """
+        q = pin.neutral(self.full_model)
+        for name, value in named.items():
+            if not self.full_model.existJointName(name):
+                continue
+            joint = self.full_model.joints[self.full_model.getJointId(name)]
+            if joint.nq == 2:
+                q[joint.idx_q] = np.cos(value)
+                q[joint.idx_q + 1] = np.sin(value)
+            else:
+                q[joint.idx_q] = value
+        return q
+
+    def q_full_from_named(self, named: dict | None) -> np.ndarray:
+        """측정 관절값 사전을 전체 모델 q로 변환해 반환한다 (누락 관절은 ready 값 유지).
+
+        실로봇은 24관절만 보고하고 그리퍼 손가락(프리즘 4관절)은 별도 버스라 값이 없다.
+        누락분을 ready로 채워야 링크가 원점으로 무너지지 않는다.
+        """
+        if not named:
+            return self.q_full_ready.copy()
+        merged = dict(self._ready_map)
+        merged.update(named)
+        return self._build_q_full(merged)
+
+    def arm_q_indices(self) -> dict[str, int]:
+        """축소 모델 q 벡터에서 각 팔 관절의 인덱스 {관절명: idx_q}를 반환한다 (측정값 동기화용)."""
+        return {
+            name: self.model.joints[self.model.getJointId(name)].idx_q
+            for name in ARM_JOINT_NAMES
+        }
+
+    def arm_positions(self, q_reduced: np.ndarray) -> dict:
+        """축소 모델 q(14)를 {관절명: 각도} 사전으로 변환해 반환한다 (시뮬 시각화 입력용)."""
+        return {
+            name: float(q_reduced[self.model.joints[self.model.getJointId(name)].idx_q])
+            for name in ARM_JOINT_NAMES
+        }
+
+    # ── URDF 파싱 ───────────────────────────────────────────────────────────
 
     def _parse_visuals(self, xml: str) -> dict:
         """URDF에서 링크별 visual(메시 파일·origin)을 추출해 반환한다.
@@ -134,40 +187,11 @@ class RobotModel:
             }
         return visuals
 
-    def _log_geometry(self):
-        """모델 로드 결과와 기준 기하(어깨 위치·상완 길이)를 로그로 남긴다."""
-        poses = self.fk_frames(self.q_ready)
-        r_sh, l_sh = poses["right"]["shoulder"][0], poses["left"]["shoulder"][0]
-        logger.info(
-            f"축소 모델 로드: nq={self.model.nq}, visual 링크 {len(self._visuals)}개, "
-            f"오른어깨 {np.round(r_sh, 3)}, 왼어깨 {np.round(l_sh, 3)}, 상완 {self.upper_arm_length():.3f}m"
-        )
-
-    def fk_frames(self, q: np.ndarray) -> dict:
-        """관절각 q(14)로 IK 관련 프레임 포즈를 계산해 반환한다.
-
-        반환: {side: {wrist/elbow/shoulder: (pos(3), quat(x,y,z,w))}} — 로봇 base 프레임.
-        wrist 위치는 그리퍼 TCP(집는 지점, ee 로컬 GRIPPER_TCP_OFFSET 적용) 기준이다.
-        """
-        pin.framesForwardKinematics(self.model, self.data, q)
-        tcp_offset = np.asarray(config.GRIPPER_TCP_OFFSET)
-        out = {}
-        for side, ids in self.frame_ids.items():
-            out[side] = {}
-            for key, fid in ids.items():
-                M = self.data.oMf[fid]
-                pos = M.translation.copy()
-                # 손 목표는 그리퍼 몸체가 아니라 집는 지점에 대응시킨다
-                if key == "wrist":
-                    pos = pos + M.rotation @ tcp_offset
-                out[side][key] = (pos, pin.Quaternion(M.rotation).coeffs().copy())
-        return out
-
     def _parse_finger_joints(self, xml: str) -> list[dict]:
         """URDF에서 그리퍼 손가락(프리즘) 관절 정보를 추출해 반환한다.
 
-        축소 모델에서는 손가락 관절이 잠겨 있어(q=0=닫힘) FK가 못 움직이므로,
-        시각화에서 열림 정도(openness)에 따라 수동 합성하기 위한 메타데이터.
+        손가락은 실로봇 상태에 포함되지 않고 FK로도 안 움직이므로, 시각화에서 열림 정도
+        (openness)에 따라 수동 합성하기 위한 메타데이터를 미리 뽑아 둔다.
         반환: [{child, parent, side, T_origin(4x4), axis(3, 관절 프레임), q_open(열림 시 관절값)}]
         """
         fingers = []
@@ -198,26 +222,29 @@ class RobotModel:
             })
         return fingers
 
-    def fk_visual_links(self, q: np.ndarray, gripper_open: dict | None = None) -> dict:
-        """관절각 q(14)로 visual이 있는 모든 링크의 포즈를 계산해 반환한다.
+    # ── 시각화 FK (전체 모델) ────────────────────────────────────────────────
 
+    def fk_visual(self, named: dict | None, gripper_open: dict | None = None) -> dict:
+        """관절값 사전으로 visual이 있는 모든 링크의 포즈를 계산해 반환한다.
+
+        named: {관절명: 각도(rad)} (실로봇 측정값 또는 IK 결과). None이면 ready pose.
         gripper_open: {left/right: 열림 정도 0(닫힘)-1(열림)} — 손가락 링크 포즈를 이 값으로 합성.
-        반환: {링크명: (pos(3), quat(x,y,z,w))} — 로봇 base 프레임. 브라우저 시각화용.
+        반환: {링크명: (pos(3), quat(x,y,z,w))} — 로봇 base 프레임.
         """
-        pin.framesForwardKinematics(self.model, self.data, q)
+        q = self.q_full_from_named(named)
+        pin.framesForwardKinematics(self.full_model, self.full_data, q)
         out = {}
         for name in self._visuals:
-            fid = self.model.getFrameId(name)
-            M = self.data.oMf[fid]
+            M = self.full_data.oMf[self.full_model.getFrameId(name)]
             out[name] = (M.translation.copy(), pin.Quaternion(M.rotation).coeffs().copy())
 
-        # 손가락은 잠긴 관절이라 열림 정도에 따라 수동 합성: T_child = T_ee · T_origin · Trans(axis·q)
+        # 손가락은 측정값이 없으므로 열림 정도로 합성: T_child = T_ee · T_origin · Trans(axis·q)
         if gripper_open is not None:
             for f in self._fingers:
                 if f["child"] not in self._visuals:
                     continue
                 openness = float(np.clip(gripper_open.get(f["side"], 0.0), 0.0, 1.0))
-                M_ee = self.data.oMf[self.model.getFrameId(f["parent"])]
+                M_ee = self.full_data.oMf[self.full_model.getFrameId(f["parent"])]
                 T_ee = np.eye(4)
                 T_ee[:3, :3] = M_ee.rotation
                 T_ee[:3, 3] = M_ee.translation
@@ -227,31 +254,67 @@ class RobotModel:
                 out[f["child"]] = (T[:3, 3].copy(), R.from_matrix(T[:3, :3]).as_quat())
         return out
 
-    def visual_config(self) -> dict:
-        """브라우저 1회 전송용 시각화 메타(링크별 메시 파일·origin)를 반환한다."""
-        return self._visuals
-
-    def shoulder_positions(self) -> dict:
-        """ready pose 기준 좌·우 어깨(arm_0 원점) 위치를 반환한다 (토르소 고정이라 상수)."""
-        poses = self.fk_frames(self.q_ready)
-        return {side: poses[side]["shoulder"][0] for side in ("left", "right")}
-
-    def upper_arm_length(self) -> float:
-        """ready pose 기준 어깨-팔꿈치 거리(m)를 반환한다 (팔꿈치 방향 코스트의 스케일)."""
-        poses = self.fk_frames(self.q_ready)
-        return float(np.linalg.norm(poses["right"]["elbow"][0] - poses["right"]["shoulder"][0]))
-
-    def camera_pose(self) -> tuple[np.ndarray, np.ndarray]:
+    def camera_pose(self, named: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
         """머리 장착 카메라의 광학 프레임 포즈 (pos(3), R(3x3))를 로봇 base 프레임으로 반환한다.
 
         장착 링크(config.CAMERA_MOUNT_LINK)의 FK에 장착 오프셋·광학 축 대응(config.CAMERA_MOUNT_*)을
-        합성: p = p_link + R_link·t_mount,  R = R_link·R_mount. 머리·토르소가 잠겨 있어 상수다.
+        합성: p = p_link + R_link·t_mount,  R = R_link·R_mount.
+        머리·토르소가 움직이면 값이 바뀌므로 관절값이 갱신될 때마다 다시 호출해야 한다.
         """
-        pin.framesForwardKinematics(self.model, self.data, self.q_ready)
-        M = self.data.oMf[self.model.getFrameId(config.CAMERA_MOUNT_LINK)]
+        q = self.q_full_from_named(named)
+        pin.framesForwardKinematics(self.full_model, self.full_data, q)
+        M = self.full_data.oMf[self.full_model.getFrameId(config.CAMERA_MOUNT_LINK)]
         R_mount = np.asarray(config.CAMERA_MOUNT_ROT, dtype=float)
         t_mount = np.asarray(config.CAMERA_MOUNT_POS, dtype=float)
         return M.translation + M.rotation @ t_mount, M.rotation @ R_mount
+
+    def camera_link_pose(self, named: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """카메라 장착 링크 자체의 포즈 (pos(3), quat(x,y,z,w))를 로봇 base 프레임으로 반환한다.
+
+        VR에서 사용자 시점을 로봇 머리에 붙일 때 쓴다 (광학 축 대응 없이 링크 프레임 그대로).
+        """
+        q = self.q_full_from_named(named)
+        pin.framesForwardKinematics(self.full_model, self.full_data, q)
+        M = self.full_data.oMf[self.full_model.getFrameId(config.CAMERA_MOUNT_LINK)]
+        return M.translation.copy(), pin.Quaternion(M.rotation).coeffs().copy()
+
+    # ── IK 프레임 FK (축소 모델) ────────────────────────────────────────────
+
+    def fk_frames(self, q: np.ndarray) -> dict:
+        """축소 모델 관절각 q(14)로 IK 관련 프레임 포즈를 계산해 반환한다.
+
+        반환: {side: {wrist/elbow/shoulder: (pos(3), quat(x,y,z,w))}} — 로봇 base 프레임.
+        wrist 위치는 그리퍼 TCP(집는 지점, ee 로컬 GRIPPER_TCP_OFFSET 적용) 기준이다.
+        """
+        pin.framesForwardKinematics(self.model, self.data, q)
+        tcp_offset = np.asarray(config.GRIPPER_TCP_OFFSET)
+        out = {}
+        for side, ids in self.frame_ids.items():
+            out[side] = {}
+            for key, fid in ids.items():
+                M = self.data.oMf[fid]
+                pos = M.translation.copy()
+                # 손 목표는 그리퍼 몸체가 아니라 집는 지점에 대응시킨다
+                if key == "wrist":
+                    pos = pos + M.rotation @ tcp_offset
+                out[side][key] = (pos, pin.Quaternion(M.rotation).coeffs().copy())
+        return out
+
+    # ── 메타데이터·한계 ─────────────────────────────────────────────────────
+
+    def _log_geometry(self):
+        """모델 로드 결과와 기준 기하(어깨 위치·상완 길이)를 로그로 남긴다."""
+        poses = self.fk_frames(self.q_ready)
+        r_sh, l_sh = poses["right"]["shoulder"][0], poses["left"]["shoulder"][0]
+        logger.info(
+            f"모델 로드: 전체 nq={self.full_model.nq}, 축소 nq={self.model.nq}, "
+            f"visual 링크 {len(self._visuals)}개, 오른어깨 {np.round(r_sh, 3)}, "
+            f"왼어깨 {np.round(l_sh, 3)}, 상완 {self.upper_arm_length():.3f}m"
+        )
+
+    def visual_config(self) -> dict:
+        """브라우저 1회 전송용 시각화 메타(링크별 메시 파일·origin)를 반환한다."""
+        return self._visuals
 
     def camera_visual_config(self) -> dict:
         """브라우저 카메라 표시용 메타 {link, origin{pos,quat}(WebXR 기저, 링크 로컬), mesh_base, mesh}를 반환한다.
@@ -267,6 +330,16 @@ class RobotModel:
             "mesh_base": config.CAMERA_MESH_URL_PREFIX,
             "mesh": config.CAMERA_MESH_FILE,
         }
+
+    def shoulder_positions(self) -> dict:
+        """ready pose 기준 좌·우 어깨(arm_0 원점) 위치를 반환한다 (토르소 고정이라 상수)."""
+        poses = self.fk_frames(self.q_ready)
+        return {side: poses[side]["shoulder"][0] for side in ("left", "right")}
+
+    def upper_arm_length(self) -> float:
+        """ready pose 기준 어깨-팔꿈치 거리(m)를 반환한다 (팔꿈치 방향 코스트의 스케일)."""
+        poses = self.fk_frames(self.q_ready)
+        return float(np.linalg.norm(poses["right"]["elbow"][0] - poses["right"]["shoulder"][0]))
 
     def joint_bounds(self) -> tuple[np.ndarray, np.ndarray]:
         """축소 모델의 관절 하한·상한(rad)을 반환한다.
@@ -286,6 +359,19 @@ class RobotModel:
         """축소 모델의 관절 속도 한계(rad/s, URDF velocity)를 반환한다."""
         return self.model.velocityLimit.copy()
 
+    def velocity_limits_named(self) -> dict[str, float]:
+        """전체 모델의 1자유도 관절 속도 한계 {관절명: rad/s}를 반환한다 (로봇 명령 안전 상한용)."""
+        limits = {}
+        for jid in range(1, self.full_model.njoints):
+            joint = self.full_model.joints[jid]
+            if joint.nv == 1:
+                limits[self.full_model.names[jid]] = float(self.full_model.velocityLimit[joint.idx_v])
+        return limits
+
+    def ready_positions(self) -> dict[str, float]:
+        """ready pose의 관절값 {관절명: rad}(토르소·양팔·머리)를 반환한다."""
+        return dict(self._ready_map)
+
     def joint_names_in_q_order(self) -> list[str]:
-        """q 벡터 순서대로 관절 이름을 반환한다 (로봇 브리지의 이름 기반 매핑용)."""
+        """축소 모델 q 벡터 순서대로 관절 이름을 반환한다 (로봇 브리지의 이름 기반 매핑용)."""
         return [self.model.names[jid] for jid in range(1, self.model.njoints)]
