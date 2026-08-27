@@ -19,6 +19,7 @@ import { createXR, enterVR, isVRSupported } from "./xr/xr_session.js";
 import { PoseUplink } from "./net/uplink.js";
 import { MonitorLink } from "./net/monitor.js";
 import { decodePointCloud } from "./net/pointcloud.js";
+import { ManualControl } from "./manual_control.js";
 
 // HUD 갱신 주기(ms): 매 XR 프레임(72-120Hz) 갱신은 텍스처 낭비라 10Hz로 제한
 const HUD_INTERVAL_MS = 100;
@@ -41,7 +42,7 @@ async function boot() {
     const robotView = new RobotView(scene);
     const pcdView = new PointCloudView(scene);
     // 로봇 상태 공급자(robot/sim)를 HUD에 표시하기 위해 마지막 값을 들고 있는다
-    const robotStatus = { source: "?", live: false };
+    const robotStatus = { source: "?", live: false, armed: null };
     const onBinary = (buf) => _routeBinary(buf, pcdView);
 
     // immersive-vr 미지원(PC)에서는 XR 경험 자체를 만들지 않는다
@@ -77,7 +78,16 @@ async function boot() {
         // 아바타 로드는 비동기지만 수신 루프를 막을 이유가 없다 (준비 전 샘플은 무시된다)
         human.load(AVATAR_BASE, AVATAR_FILE);
 
+        const modeBtn = document.getElementById("modeBtn");
+        const modeUi = { mode: null, switching: false };
+        // 수동 조작 패널: VR 대신 같은 형식의 샘플을 같은 업링크로 보낸다 (dev 모드에서만 표시)
+        const manual = new ManualControl();
+
         const monitor = new MonitorLink((msg) => {
+            if (msg.type === "mode_status") {
+                _applyModeStatus(msg, modeUi, modeBtn, manual);
+                return;
+            }
             if (_routeRobotMessage(msg, robotView, robotStatus)) return;
             human.update(msg);
             hud.update(formatSample(msg, [
@@ -86,6 +96,9 @@ async function boot() {
             ]));
         }, onBinary);
         monitor.connect();
+
+        _wireModeButton(modeBtn, modeUi, monitor);
+        window.__teleop_manual = manual;
     }
 
     engine.runRenderLoop(() => scene.render());
@@ -108,6 +121,7 @@ function _routeRobotMessage(msg, robotView, status) {
         robotView.applyState(msg);
         status.source = msg.source ?? "?";
         status.live = Boolean(msg.live);
+        status.armed = msg.armed ?? null;
         return true;
     }
     return false;
@@ -122,6 +136,46 @@ function _routeBinary(buf, pcdView) {
 }
 
 /**
+ * 서버 mode_status 메시지를 모드 버튼·수동 조작 패널에 반영한다. 반환값 없음.
+ * ui: {mode, switching} — 버튼 클릭 로직이 참조하는 최신 상태.
+ * 버튼은 현재 상태가 아니라 **전환 동작**만 표시한다. 현재 모드는 HUD의 로봇 항목으로 보인다.
+ */
+function _applyModeStatus(msg, ui, modeBtn, manual) {
+    ui.mode = msg.mode;
+    ui.switching = Boolean(msg.switching);
+
+    modeBtn.hidden = false;
+    modeBtn.disabled = ui.switching;
+    const target = ui.mode === "deploy" ? "dev" : "deploy";
+    modeBtn.classList.toggle("to-deploy", target === "deploy");
+    modeBtn.textContent = ui.switching ? "전환 중…" : `${target}로 전환`;
+
+    // 수동 조작은 dev에서만 — deploy로 바뀌면 패널을 숨기고 송신도 멈춘다
+    manual.setDevMode(ui.mode === "dev" && !ui.switching);
+
+    // 실패(전환 거부·연결 실패)만 알린다 — 서버는 기존 모드를 유지한다
+    if (!msg.ok) alert(`모드 전환 실패: ${msg.message}`);
+}
+
+/**
+ * 모드 버튼 클릭 → set_mode 명령 전송을 연결한다. 반환값 없음.
+ * 실로봇에 연결하는 deploy 전환만 확인 대화상자를 거친다 (dev 전환은 항상 안전).
+ */
+function _wireModeButton(modeBtn, ui, monitor) {
+    modeBtn.addEventListener("click", () => {
+        if (ui.switching || ui.mode === null) return;
+        const target = ui.mode === "deploy" ? "dev" : "deploy";
+        if (target === "deploy" &&
+            !confirm("deploy 모드로 전환합니다.\n실로봇(RBY1)에 연결됩니다 — 로봇 주변 안전을 확인했습니까?")) {
+            return;
+        }
+        if (!monitor.send({ type: "set_mode", mode: target })) {
+            alert("서버 연결이 끊겨 있어 전환 요청을 보낼 수 없습니다.");
+        }
+    });
+}
+
+/**
  * HUD용 포인트클라우드 수신 상태 문자열을 반환한다.
  */
 function _pcdStatus(pcdView) {
@@ -129,11 +183,14 @@ function _pcdStatus(pcdView) {
 }
 
 /**
- * HUD용 로봇 상태 공급자 문자열을 반환한다 (실로봇인지 시뮬레이션인지 한눈에 보이게).
+ * HUD용 로봇 상태 문자열을 반환한다 — 공급자(실로봇/시뮬)와 제어 상태(대기/제어 중)를 한눈에.
+ * 제어가 대기면 로봇은 조작을 따라오지 않는다 — 그 이유가 화면에 보여야 한다.
  */
 function _robotStatus(status) {
     const label = status.source === "robot" ? "실로봇" : "시뮬레이션";
-    return `${label}${status.live ? "" : " (측정값 없음)"}`;
+    const armed = status.armed === null ? "" :
+        status.armed ? " | 제어 중 (B=해제)" : " | 제어 대기 — A를 눌러 시작";
+    return `${label}${status.live ? "" : " (측정값 없음)"}${armed}`;
 }
 
 /**

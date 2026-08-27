@@ -45,28 +45,42 @@ teleop/                      # 저장소 루트
 │       ├── net/             # WebSocket 업링크, WebRTC 수신, 포인트클라우드 수신
 │       ├── render/          # Babylon.js 씬, 영상 텍스처, 포인트클라우드, HUD
 │       └── main.js
-├── teleop/                  # 백엔드 파이썬 패키지
-│   ├── main.py              # 엔트리포인트, 모듈 조립
-│   ├── core/                # 연산 기능
-│   │   ├── ik/              # 포즈 → 관절각 (Pinocchio + CasADi)
-│   │   └── depth_to_3d/     # D455 depth → 포인트클라우드 생성
-│   ├── net/                 # 통신 기능
-│   │   ├── web_api/         # HTTPS 정적 서빙 + WSS + WebRTC 시그널링
-│   │   └── stream/          # D455 RGB → WebRTC 트랙
-│   ├── robot_sdk/           # 로봇 SDK 추상화
-│   │   ├── base.py          # 추상 인터페이스 (다른 로봇 추가 대비)
-│   │   └── rby1/            # rby1-sdk 구현
-│   └── utils/               # 2개 이상 모듈이 공유하는 공통 코드만
-│       ├── record/          # 세션 데이터 기록
-│       ├── camera/          # D455 공용 캡처 (stream·depth_to_3d 공유, 1회 오픈)
-│       ├── config.py        # 포트·게인·카메라 파라미터 설정
-│       ├── log.py           # 실행 중 모니터링 로그 포맷
-│       └── transforms.py    # 쿼터니언·행렬, WebXR → 로봇 좌표 변환
+├── teleop/                  # 백엔드 파이썬 패키지 (파일명만 보고 역할이 보이게 명명)
+│   ├── main.py              # 엔트리포인트: 공통 스택 조립 + ModeManager(dev/deploy 부품 조립·웹 런타임 전환)
+│   ├── ik/                  # 포즈 → 관절각 (순수 계산기만 — 루프 없음, robot_controller가 호출)
+│   │   ├── ik_solver.py     #   IK 최적화 (Pinocchio + CasADi)
+│   │   └── pose_to_target.py #  사람 포즈 → IK 목표 (grip 클러치 + 손 델타 매핑)
+│   ├── pointcloud/          # depth → 포인트클라우드
+│   │   ├── depth_to_pcd.py  #   depth 프레임 → 3D 점군 변환 + 전송용 바이너리 패킹
+│   │   └── pcd_streamer.py  #   10Hz 루프: 새 프레임을 변환해 전 클라이언트 방송
+│   ├── net/                 # 통신
+│   │   ├── web_server.py    #   HTTPS 정적 서빙 + WSS 라우트 (3개 포트) + 자산 gzip 사전 압축
+│   │   └── websocket.py     #   웹소켓 접속 관리: 포즈 수신·전 클라이언트 방송·명령 라우팅
+│   │                        #   (6단계에서 video_stream 추가 예정)
+│   ├── robot/               # 로봇
+│   │   ├── robot_model.py   #   URDF 로드·FK (시각화·IK·카메라 외부 파라미터 공용)
+│   │   ├── robot_interface.py # 로봇·그리퍼 추상 인터페이스 (계약)
+│   │   ├── robot_controller.py # 30Hz 제어 루프: 입력 해석 → IK 호출 → 안전 클램프 → 명령 전송 (A/B 상태 머신)
+│   │   ├── robot_state_broadcaster.py # 로봇 상태 읽어 FK → 브라우저 방송 (30Hz)
+│   │   ├── rby1_robot.py    #   [배포] rby1-sdk gRPC 백엔드
+│   │   ├── rby1_gripper.py  #   [배포] Dynamixel 그리퍼
+│   │   ├── sim_robot.py     #   [dev] 시뮬 로봇 (1차 지연 추종)
+│   │   └── sim_gripper.py   #   [dev] 시뮬 그리퍼
+│   ├── camera/              # RGB-D 소스
+│   │   ├── camera_interface.py # 프레임 소스 추상 인터페이스 (계약)
+│   │   ├── d455_camera.py   #   [배포] 실물 D455
+│   │   └── synthetic_camera.py # [dev] 합성 장면 생성
+│   └── utils/               # 공용 유틸 (config: 전역 설정·TELEOP_MODE, transforms, inputs, log;
+│                            #             record는 8단계에서 추가)
+├── assets/                  # 정적 자산: rby1a/(URDF+GLB 메시, rby1-sdk v0.9.1에서 추림, 14MB),
+│                            # avatar.glb(아바타), d455.glb(카메라) — /assets/ URL로 서빙
+├── tools/                   # 실행 도구 (fake_vr_quest3.py: Quest 3 대체 합성 포즈 송신,
+│                            #            make_https_cert.py: 자체 서명 인증서 생성)
 ├── docker/
 │   ├── compose.yml
 │   └── Dockerfile
 ├── logs/                    # 기록 출력 (gitignore)
-└── oss/                     # rby1-sdk, rby1-examples-vr-teleop (참조용)
+└── oss/                     # rby1-sdk, rby1-examples-vr-teleop (참조용, gitignore)
 ```
 
 ## 구성 요소별 계획

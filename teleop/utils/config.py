@@ -6,8 +6,24 @@
 import os
 from pathlib import Path
 
-# 저장소 루트 (컨테이너에서는 /workspace). 이 파일 위치 기준으로 역산해 마운트 경로에 독립적으로 동작
+# 저장소 루트 (컨테이너에서는 /workspace). 이 파일 위치 기준으로 역산해
+# 마운트 경로에 독립적으로 동작한다
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# 초기 실행 모드: dev = 가짜 부품(시뮬 로봇·시뮬 그리퍼·합성 카메라)으로 전체 파이프라인 구동 (하드웨어 불필요),
+#                deploy = 실로봇(gRPC)·실물 D455 사용 (로봇 내장 PC).
+# 실로봇을 움직이는 쪽이 명시적 선택이어야 하므로 기본값은 dev다.
+# 기동 후에는 웹 데스크톱 뷰의 모드 버튼으로 런타임 전환할 수 있다 (main.py의 ModeManager).
+# 초기 모드가 deploy인데 로봇 연결이 실패하면 폴백 없이 기동 실패로 처리하고,
+# 웹에서 deploy로 전환하다 실패하면 현재 모드를 유지한 채 오류만 알린다.
+TELEOP_MODE = os.environ.get("TELEOP_MODE", "dev")
+
+# dev 모드 시뮬 로봇: 명령 추종 1차 지연 시간 상수(초).
+# 0보다 크게 두면 명령-측정 오차가 실제로 생겨 추적 오차 해제(CONTROL_MAX_TRACKING_ERR)·속도 클램프
+# 경로까지 dev에서 자극된다. 팔 속도 상한(1.5 rad/s) × τ ≈ 정상 상태 오차 0.23 rad < 해제 임계 0.5
+SIM_TRACKING_TAU = 0.15
+# dev 모드 시뮬 그리퍼: 가짜 호밍 소요 시간(초) — 기동 직후 ready 전 상태 처리를 시험하기 위한 지연
+SIM_GRIPPER_HOMING_S = 1.0
 
 # 프론트엔드 정적 파일 루트와 자체 서명 인증서 출력 위치
 WEB_ROOT = REPO_ROOT / "web"
@@ -15,10 +31,15 @@ CERT_DIR = WEB_ROOT / "certs"
 CERT_FILE = CERT_DIR / "server.crt"
 KEY_FILE = CERT_DIR / "server.key"
 
-# RBY1 모델 리소스: IK용 URDF와 브라우저 시각화용 GLB 메시.
-# pip 패키지(rby1_sdk)에는 포함되지 않아 이미지 빌드 시 SDK 저장소에서 받아 굽는다(docker/Dockerfile).
-# 저장소 안에 두지 않으므로 기본값은 이미지 내부 경로이고, 다른 위치를 쓸 때만 환경 변수로 덮어쓴다.
-RBY1_MODEL_ROOT = Path(os.environ.get("RBY1_MODEL_ROOT", "/opt/rby1/models/rby1a"))
+# 정적 자산 루트: 로봇 모델(rby1a/)과 시각화 에셋(avatar.glb, d455.glb)을 한곳에 모은다.
+# 서버가 /assets/ URL로 서빙한다 (web_server.py)
+ASSETS_DIR = REPO_ROOT / "assets"
+
+# RBY1 모델: IK용 URDF와 브라우저 시각화용 GLB 메시 (assets/rby1a, 약 14MB — rby1-sdk v0.9.1의
+# rby1a/urdf에서 model.urdf와 glb만 추린 것. dae는 미사용: pinocchio는 URDF XML만 파싱하고
+# 브라우저는 glb만 그린다). 저장소 상대경로라 어디서든 동작하고, 환경 변수로 덮어쓸 수 있다.
+# SDK를 올릴 때는 pip 버전과 같은 태그의 models/rby1a로 이 폴더를 갱신할 것 (버전 어긋남 주의)
+RBY1_MODEL_ROOT = Path(os.environ.get("RBY1_MODEL_ROOT", str(ASSETS_DIR / "rby1a")))
 RBY1_URDF = RBY1_MODEL_ROOT / "urdf" / "model.urdf"
 RBY1_MESH_DIR = RBY1_URDF.parent / "meshes"
 MESH_URL_PREFIX = "/models/"
@@ -166,7 +187,7 @@ CAMERA_MOUNT_ROT = (
 )
 
 # 가상 로봇의 카메라 표시 메시: Intel realsense-ros의 d455.stl을 camera_link 프레임(m)으로 구운 GLB
-# (web/assets/, 정적 루트로 서빙). 원점 = 좌측 IR(depth) 광학 중심, 몸체는 -y(우측)로 124 mm 뻗음
+# (assets/, /assets/ URL로 서빙). 원점 = 좌측 IR(depth) 광학 중심, 몸체는 -y(우측)로 124 mm 뻗음
 CAMERA_MESH_URL_PREFIX = "/assets/"
 CAMERA_MESH_FILE = "d455.glb"
 

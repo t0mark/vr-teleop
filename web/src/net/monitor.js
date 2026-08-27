@@ -47,4 +47,13 @@ export class MonitorLink {
         };
         this._ws.onerror = () => this._ws.close();
     }
+
+    /**
+     * JSON 명령 메시지를 서버로 보낸다 (모드 전환 등). 반환: 전송 여부 (미접속이면 false).
+     */
+    send(obj) {
+        if (!this.connected || this._ws?.readyState !== WebSocket.OPEN) return false;
+        this._ws.send(JSON.stringify(obj));
+        return true;
+    }
 }

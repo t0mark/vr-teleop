@@ -3,11 +3,14 @@
 ## docker/Dockerfile
 
 - 이미지: `t0mark251/rby1-web-teleop:latest` (1.3GB)
-- **2단계 빌드**
-    - 1단계(models): rby1-sdk 저장소 태그 `v0.9.1`을 blob 필터 + sparse checkout으로 받아
-      `models/rby1a/urdf`의 model.urdf와 GLB만 추린다 (저장소 models/ 전체 419MB → 14MB)
-    - 2단계(런타임): debian:bookworm-slim + micromamba(/opt/bin/micromamba) + conda 환경(/opt/venv).
-      1단계 산출물을 `/opt/rby1/models`로 COPY하고 `RBY1_MODEL_ROOT`로 노출 (config.py 기본값과 동일)
+- 단일 빌드: debian:bookworm-slim + micromamba(/opt/bin/micromamba) + conda 환경(/opt/venv)
+- **모델은 이미지에 없다 (2026-08-25 저장소로 이관)**: 원래 2단계 빌드로 rby1-sdk 태그에서
+  sparse checkout 해 `/opt/rby1/models`에 굽고 `RBY1_MODEL_ROOT` ENV로 노출했으나,
+  개발 PC마다 이미지 재빌드가 필요해지는 문제로 저장소 포함으로 결정 변경 (아래 URDF 항목 참고).
+  **함정: 내장 PC의 기존 이미지에는 `ENV RBY1_MODEL_ROOT=/opt/rby1/models/rby1a`가 남아 있어**
+  config의 env 우선 규칙 때문에 저장소 모델 대신 이미지 사본(v0.9.1, 현재는 내용 동일)을 쓴다.
+  저장소 모델을 갱신하면 어긋나므로 내장 PC에서는 이미지 재빌드(권장) 또는 기동 시
+  `RBY1_MODEL_ROOT=` 명시로 해제할 것
 - 핵심 스택 설치 경로가 이원화되어 있음
     - conda-forge: python 3.11, pinocchio 4.1.0, casadi 3.7.2, numpy, scipy
     - pip: rby1-sdk 0.9.1(고정), aiortc, websockets, aiohttp, pyrealsense2
@@ -15,11 +18,8 @@
     - **Pinocchio를 pip(pin 패키지)으로 설치하면 안 됨**: PyPI wheel은 전 버전(2.x-4.x)에서 casadi 지원 없이 빌드되어
       `pinocchio.casadi`(cpin) import 불가. conda-forge 빌드만 포함. IK가 cpin에 의존하므로 conda 필수
     - **모델 자산은 pip 패키지에 없다**: `rby1_sdk` wheel 내용물은 `_bindings.so` + `__init__.py`뿐이고
-      URDF·메시는 GitHub 저장소에만 있다. 따라서 이미지 빌드 시점에 받아 굽고, 워크스페이스에는 두지 않는다
-    - **dae는 이미지에 넣지 않는다**(47MB): pinocchio는 URDF XML만 파싱해 메시 파일을 열지 않고
-      (`buildModelFromXML`, GeometryModel 미사용), 브라우저 시각화는 GLB만 쓴다
-    - rby1-sdk PyPI 최신은 **0.9.1**이다 (`>=0.7.0`으로 설치하면 0.9.1이 잡힘). URDF와 제어 API를 같은
-      릴리스로 묶으려고 pip 버전과 모델 태그를 `ARG RBY1_SDK_VERSION` 하나로 공유한다
+      URDF·메시는 GitHub 저장소에만 있다 → 저장소 `models/rby1a`에 추려서 포함 (위 URDF 항목 참고)
+    - rby1-sdk PyPI 최신은 **0.9.1**이다 (`>=0.7.0`으로 설치하면 0.9.1이 잡힘)
     - librealsense 소스 빌드 대신 pyrealsense2 PyPI wheel 사용 (D455 취득에 충분). 문제 시 최소 소스 빌드로 회귀
     - `/opt/venv/bin`을 PATH 앞에 두어 컨테이너의 기본 `python` = conda 환경
     - GStreamer(NVENC)는 미포함. 내장 PC에 NVIDIA GPU가 없으므로 영상 단계(6단계)는 소프트웨어 인코딩 전제로 설계한다
@@ -58,8 +58,12 @@
 
 ## RBY1 URDF·메시 관련
 
-- 위치: 이미지 내부 `/opt/rby1/models/rby1a/urdf/model.urdf`, 메시는 같은 폴더 meshes/ (glb만 포함).
-  경로는 `config.RBY1_MODEL_ROOT`(환경 변수 `RBY1_MODEL_ROOT`로 덮어쓰기 가능)로 결정된다
+- 위치: **저장소 `models/rby1a/urdf/model.urdf`**, 메시는 같은 폴더 meshes/ (glb 36개만 포함, 14MB).
+  경로는 `config.RBY1_MODEL_ROOT`(기본 저장소 상대경로, 환경 변수로 덮어쓰기 가능)로 결정된다
+    - 2026-08-25 이미지 내장 → 저장소 포함으로 결정 변경 (개발 PC마다 재빌드가 필요한 문제).
+      출처는 rby1-sdk 태그 v0.9.1의 models/rby1a — **pip 버전을 올리면 같은 태그의 모델로 이 폴더를
+      함께 갱신할 것** (URDF와 제어 API의 릴리스 묶음이 수동 관리로 바뀌었다)
+    - dae는 넣지 않는다(47MB): pinocchio는 URDF XML만 파싱하고 브라우저는 glb만 그린다
 - **표준 urdfdom으로 원본 로드 불가**: wheel 관절 limit에 effort 누락 → `robot_model.load_fixed_urdf_xml()`이 보정 후 `buildModelFromXML` 사용. collision capsule 에러 출력은 비치명(무시)
 - **GLB 정점 데이터는 URDF 링크 프레임(z-up) 그대로** (bbox를 URDF collision과 대조해 확인).
   glb 내부 루트 노드는 전부 identity — 축 변환이 파일에 안 구워져 있음
@@ -355,6 +359,161 @@
 - 평문 http를 8443에 보내면 무응답 끊김(ERR_EMPTY_RESPONSE, 로그 없음) — 진단 시 최우선 의심
 - Quest 필수 설정: chrome://flags "WebXR Experiments" + 설정→동작 추적→신체 추적
 - 서버 로그: `logs/web_api.log`
+
+## 구조 개편 + 웹 런타임 모드 전환 (2026-08-25)
+
+- **teleop/ 재구성**: 파일명만 보고 역할이 보이도록 전면 개명. **이 문서의 이전 기록에 나오는
+  옛 경로는 아래 표로 읽는다** (내용은 동일, 경로·이름만 변경):
+    | 옛 경로 | 새 경로 |
+    |---|---|
+    | utils/config.py | 그대로 (한때 루트로 승격했다가 utils 정의에 부합해 복귀. **위치를 옮기면
+      REPO_ROOT 역산 parents 깊이를 같이 고칠 것** — 실제로 밟은 함정) |
+    | core/ik/solver.py, mapper.py | ik/ik_solver.py, pose_to_target.py |
+    | core/ik/service.py (IK 자체 루프) | **robot_controller.py에 흡수** — 아래 "IK pull 구조" 항목 참고 |
+    | core/ik/robot_model.py | robot/robot_model.py (IK 전용이 아니라 시각화 FK·카메라 외부 파라미터 공용) |
+    | core/depth_to_3d/builder+packet.py | pointcloud/depth_to_pcd.py (변환+패킹 통합, `PointCloudConverter`·`pack_pointcloud`) |
+    | core/depth_to_3d/service.py | pointcloud/pcd_streamer.py (`PointCloudStreamer`) |
+    | net/web_api/server.py | net/web_server.py |
+    | net/web_api/pose_hub.py | net/websocket.py (클래스 `PoseHub` → `WebSocketHub`) |
+    | net/web_api/precompress.py | **web_server.py에 내장** (`_compress_static_assets` — 서버 기동 단계의 세부라 파일 분리 안 함) |
+    | net/web_api/gen_certs.py | **tools/make_https_cert.py** (서버가 아닌 1회성 도구라 tools/로) |
+    | robot_sdk/base.py | robot/robot_interface.py |
+    | robot_sdk/control.py | robot/robot_controller.py (`RobotController` — 로봇에 명령 전송) |
+    | robot_sdk/service.py | robot/robot_state_broadcaster.py (`RobotStateBroadcaster` — 상태 방송) |
+    | tools/fake_quest.py (신설 당시 이름) | tools/fake_vr_quest3.py |
+    | mode_manager.py (한때 분리) | **main.py에 통합** (`ModeManager` 클래스 — 최상단 파일은 main 하나) |
+    | robot_sdk/rby1/robot·gripper.py, sim/robot·gripper.py | robot/rby1_robot·rby1_gripper·sim_robot·sim_gripper.py (평탄화) |
+    | utils/camera/base·d455·synthetic.py | camera/camera_interface·d455_camera·synthetic_camera.py |
+- **assets/ 통합**: `models/rby1a` + `web/assets/*` → 루트 `assets/` (rby1a/, avatar.glb, d455.glb).
+  web/ 밖이므로 web_server가 `/assets/` 정적 라우트를 별도로 연다. URL은 기존과 동일해 프론트 수정 없음.
+  precompress 대상은 [web/vendor, assets/] (assets는 재귀라 rby1a 메시 포함)
+- **웹 런타임 모드 전환** (main.py의 `ModeManager`): TELEOP_MODE는 초기 모드일 뿐, 데스크톱 뷰 버튼으로 dev↔deploy 전환
+    - 소유 구조: 모드 종속(백엔드·그리퍼·카메라 + 상태·제어·pcd 서비스)은 ModeManager가,
+      모드 무관(포즈 허브·IK·웹 서버)은 main이 소유. 전환 시 종속만 재생성
+    - **새 부품을 먼저 연결하고 성공했을 때만 기존을 해체** — deploy 전환 실패 시 dev가 무중단 유지
+      (실측: 연결 실패 → "dev 모드 유지" 방송, 서비스 끊김 없음)
+    - 안전: 제어 중(armed) 전환 거부 (B 해제 먼저), deploy 초기 기동 실패는 여전히 SystemExit,
+      웹 deploy 전환은 confirm 대화상자
+    - 프로토콜: 클라이언트 → `{"type":"set_mode","mode":"dev|deploy"}` (pose·monitor 소켓 양쪽 수신,
+      "type" 필드 있는 텍스트는 포즈 샘플이 아니라 명령으로 분기) / 서버 → `mode_status` 방송
+      {mode, switching, ok, message} (신규 접속에도 robot_config와 함께 1회)
+    - UI: 데스크톱 좌상단 버튼 (dev 청록 / deploy 주황 / 전환 중 비활성), 결과는 상태 줄에 표시
+    - 검증: dev 기동 → 웹 프로토콜로 deploy 요청 → 로봇 연결 실패 → dev 유지 + 오류 방송 확인,
+      fake_quest 2사이클 제어 회귀(A→ready→추종→B→재-A), 스크린샷으로 버튼·씬 렌더링 확인
+
+## 웹 수동 조작 패널 (web/src/manual_control.js, 2026-08-25)
+
+- dev 모드 데스크톱 전용 (deploy 전환 시 패널 숨김 + 송신 정지 — 패널 입력이 실로봇으로 가는 일 방지)
+- **입력 값의 출처만 다르고 코드 경로는 VR과 동일**: PoseReader와 같은 형식의 샘플을 같은
+  PoseUplink(/ws/pose)로 30Hz 송신 — 서버는 Quest인지 패널인지 구분 불가
+- 손 위치는 rest 기준 오프셋 슬라이더 (클러치 델타 매핑이라 grip 켠 채 움직인 거리 = TCP 이동 거리),
+  A/B·주행 버튼은 누르는 동안만 활성(momentary, pointerleave에서도 해제)
+- 송신 중지 시 별도 정지 명령 불필요 — 서버가 입력 두절(3초)로 자동 해제
+- body 조인트는 fake_vr_quest3.py와 같은 근사로 합성. 디버깅 훅 `window.__teleop_manual`
+
+## 웹 수동 조작 패널 + 모드 UI 정리 (2026-08-25)
+
+- `web/src/manual_control.js`: dev 모드 데스크톱 전용 수동 조작 패널 (`index.html`의 #manualPanel)
+    - **입력 출처만 다르고 코드 경로는 VR과 동일**: PoseReader와 같은 형식의 샘플을 만들어 같은
+      `PoseUplink`(/ws/pose)로 보낸다. 서버는 Quest인지 패널인지 구분 불가 (body 조인트 합성은
+      fake_vr_quest3.py와 동일 근사)
+    - 조작: 활성 체크 → grip 체크 + 손 오프셋 슬라이더(rest 기준 ±0.3m, 클러치 델타라 슬라이더
+      이동량 = TCP 이동량) + 트리거 슬라이더 + A/B 버튼(momentary) + 주행 화살표(홀드)
+    - 앞(z) 슬라이더는 +가 전방 — WebXR -z로 변환해 싣는다
+    - deploy 전환 시 패널 숨김 + 송신 정지 (패널 입력이 실로봇으로 가는 것 방지). 송신을 끄면
+      서버 입력 두절 타임아웃이 자동 해제하므로 별도 정지 명령 불필요
+    - 업링크 소켓은 첫 활성화 때 1회 접속, 다운링크 수신은 버림 (표시는 모니터 소켓 담당)
+    - 디버깅 훅 `window.__teleop_manual` — CDP로 setEnabled/setGrip/setOffset/setButton/setStick을
+      호출해 실기기 없이 종단 검증함 (클러치 앵커 → IK 추종 → 주행 → B 해제 확인)
+    - **키보드 조작** (같은 setter를 키 이벤트가 호출 — 패널·키보드·CDP 모두 한 상태를 공유):
+      M 활성 토글 / W·S 앞뒤, A·D 좌우, R·F 위아래 홀드 이동(0.15 m/s, Shift=왼손) /
+      G grip 토글 / T 트리거 홀드(2.5/s 램프) / Enter=A·Backspace=B(momentary) / 방향키 주행(합성 허용).
+      입력 요소에 포커스가 있으면 무시 (슬라이더와 충돌 방지), 홀드 적용은 송신 타이머 틱에서 dt 비례.
+      방향키를 안 쓰는 동안은 스틱 값을 건드리지 않아 패널 버튼과 공존.
+      검증: CDP 합성 키 이벤트로 M→Enter→G→W(1.5s 홀드 = 0.228m 이동, 슬라이더 동기화)→방향키→Backspace
+      전 흐름 + 서버 로그(클러치 앵커·29Hz 전송·B 해제) 확인
+    - **프로세스 정리 함정 (실제로 밟음)**: 컨테이너 안 정리에서 `python -*` 같은 느슨한 패턴은
+      돌고 있던 서버(`python -m teleop.main`)까지 죽인다. 반드시 명령의 시작 단어로 정확히 매칭할 것
+      (`chromium*` 접두 매칭 등). kill 명령 문자열의 자기 매칭 함정과 별개로 한 번 더 당한 것
+- **실사용 버그 4종 수정 (2026-08-27, "손은 움직이는데 로봇이 안 따라옴 + 방향키가 카메라 회전")**
+    - **momentary 버튼 소실**: 순간 클릭(수십 ms)이 33ms 송신 틱 사이에 끼면 눌린 샘플이 0개 전송 —
+      A가 서버에 아예 도달하지 않아 제어가 시작되지 않았다 ("제어 시작" 로그 부재로 진단).
+      → `setButton` 래치: 누름 시작 시 최소 6샘플(0.2초)의 눌린 송신 보장 (0ms 클릭으로 검증)
+    - **패널 포커스 잔류**: 체크박스·슬라이더 클릭 후 포커스가 남아 키보드 입력이 전부 무시됨
+      → 패널 pointerup 시 activeElement blur
+    - **방향키 카메라 충돌**: ArcRotateCamera가 방향키를 기본 바인딩 → scene.js에서 `camera.keys* = []`
+      (궤도 조작은 마우스 유지)
+    - **주행이 안 보임**: 시뮬 베이스 적분이 로그에만 있고 시각화에 없었음 →
+      `RobotBackend.base_pose()` (기본 None, 시뮬만 구현) → robot_state에 "base"(WebXR 기저) →
+      robot_view가 로봇 루트를 통째로 이동. 포인트클라우드는 원점 유지 (합성 장면이라 정합 무의미,
+      실로봇 오도메트리 연동 시 재검토). 실로봇은 base_pose None → 기존 동작 불변
+    - **제어 상태 가시화**: robot_state에 "armed" 추가 (broadcaster의 control_source=RobotController)
+      → HUD에 "제어 대기 — A를 눌러 시작 / 제어 중 (B=해제)" 표시. "왜 안 따라오지"의 답이 화면에 보임
+- 모드 UI 정리: 상태 줄의 "모드: ..." 문구 삭제, 버튼은 전환 동작만 표시("deploy로 전환" —
+  대상이 deploy면 주황 경고 스타일), 전환 실패만 alert. 현재 모드는 HUD 로봇 항목(시뮬/실로봇)으로 확인
+- **CSS 함정 (실제로 밟음)**: `#ui button { display: block }`이 `hidden` 속성(UA의 display:none)을
+  덮어써 숨긴 버튼이 보였다 → `#ui button[hidden] { display: none }`을 명시해 복원.
+  hidden 속성을 쓰는 요소에 display를 주는 CSS를 추가할 때는 반드시 [hidden] 복원 규칙을 같이 둘 것
+
+## IK pull 구조 — ik_loop 제거 (2026-08-25)
+
+- **IK는 스스로 돌지 않는다**: ik/에는 순수 계산기(ik_solver, pose_to_target)만 남고,
+  RobotController의 30Hz 루프가 매 주기 solve를 호출한다 (제어 중에만 — 실측 2.4-3.1 ms/solve)
+- 제거 이유: IK 자체 루프는 로봇·제어 서비스가 없던 개발 단계의 잔재. 모드 구조 도입 후
+  dev/deploy 모두 controller가 항상 존재하므로 30Hz 루프 두 개가 같은 상태를 공유할 이유가 없음.
+  병목 문제 아님 (solve 3ms ≪ 33ms 예산)
+- 함께 소멸한 것들:
+    - **거울 모드(sync_to/mirroring)**: 두 루프 조율 장치였음 → 대기 상태에서 controller가
+      `_seed_from_measured()`로 IK 상태(_last_q·솔버 warm start)를 직접 시드 (루프 하나라 경합 불가)
+    - **A 버튼 에지 감지 중복**: ik_loop과 controller 양쪽에 있던 것이 controller 한곳으로
+    - **팔/토르소 ready 보간 분리**: 팔(_step_toward_ready)도 controller로 — ready 복귀가 한 파일에
+- 상태 리셋 규약: 모드 전환 시 controller가 재생성되며 IK 상태도 리셋되지만, 대기 첫 주기에
+  측정값으로 재시드되고 클러치 앵커는 원래 grip 재체결 때 새로 잡히므로 리셋이 올바른 동작.
+  비싼 객체(CasADi NLP를 든 solver, mapper)만 main이 1회 생성해 전환 시 새 controller에 재사용
+- 그리퍼 열림(트리거 해석)도 controller 소유 — 시각화 폴백은 `RobotController.gripper_openness()`
+  (RobotStateBroadcaster의 gripper_source, gripper_openness()만 있으면 되는 덕 타이핑)
+- 부작용 없음 확인: dev 전체 시나리오 회귀 (A → ready 복귀 → 클러치 추종 29Hz → 주행 → B 해제 → 대기 시드)
+
+## 실행 모드 (dev/deploy) — 하드웨어 없는 개발 체계 (2026-08-25)
+
+- `config.TELEOP_MODE` (환경 변수, 기본 **dev**): main.py가 모드를 보고 부품만 갈아 끼운다.
+  조립 구조·서비스 배선은 두 모드가 완전히 같다 — dev에서 검증한 코드 경로가 그대로 deploy에서 돈다
+    - **deploy에서 로봇 연결 실패는 SystemExit** (시뮬 폴백 금지 — "연결 안 됐는데 조용히 떠 있는" 현장 사고 방지).
+      기존의 "연결 실패 → IK 시뮬 시각화" 암묵 폴백은 제거됨. 카메라만 선택 사항 유지
+    - 기본값이 dev인 이유: 실로봇을 움직이는 쪽이 명시적 선택이어야 함. 내장 PC 기동 명령에 `TELEOP_MODE=deploy` 필수
+- `robot_sdk/sim/robot.py`: `SimRobotBackend` — RobotBackend 완전 구현 (Rby1Backend 자리에 그대로 꽂힘)
+    - 명령 추종 1차 지연: state += (target-state)·(1-exp(-dt/τ)), τ=`SIM_TRACKING_TAU`(0.15s)
+      → 명령-측정 오차가 실제로 생겨 추적 오차 해제·속도 클램프 경로까지 dev에서 자극됨
+      (실측: 클러치 추종 중 최대 오차 0.27 rad < 해제 임계 0.5 — 오탐 해제 없음)
+    - 초기 자세 전 관절 0 (부팅 직후 실로봇처럼 ready와 다른 자세) → 제어 시작 시 "측정값 연속 출발 → ready 복귀" 관찰 가능
+    - 주행은 SE2 오일러 적분으로 가상 베이스 포즈에 누적 (통계 로그로 확인)
+    - 관절 목록은 rby1/robot.py의 `COMMAND_JOINT_NAMES` 재사용 (단일 출처)
+- `robot_sdk/sim/gripper.py`: `SimGripper` — 가짜 호밍 지연(`SIM_GRIPPER_HOMING_S` 1s) 후 ready.
+  준비 전 openness None → 상태 서비스의 대체 공급자 폴백 경로까지 실기기와 같은 순서로 자극
+- `utils/camera/synthetic.py`: `SyntheticCamera` — FrameSource 구현. 벽(3m, 체커보드)+바닥+공전 구를
+  광학 프레임 z-깊이로 합성 (PointCloudBuilder 역투영 규약과 일치). 640x480@30 실측 29.8fps, 정적 장면을
+  피해서 프레임마다 유효 깊이가 달라지는 경로 확인 가능
+- `tools/fake_vr_quest3.py`: Quest 대체 합성 포즈 송신기 (wss://host:8443/ws/pose, pose_reader.js와 동일 샘플 형식)
+    - 시나리오 24초/사이클: idle → A(제어 시작) → ready 대기 → grip+양손 원운동(좌우 반주기 위상차 —
+      좌우 뒤바뀜 회귀 육안 구분용) → 트리거 삼각 램프 → 스틱 전진·회전 → B(해제)
+    - 사용법: `python tools/fake_vr_quest3.py [--host localhost] [--rate 50] [--cycles 1]` (컨테이너 내부)
+    - **다운링크를 반드시 소비한다** (_consume 태스크): 읽지 않으면 TCP 배압으로 서버 송신 큐 드롭 유발
+    - 클러치 체결 샘플에서 손 위치가 rest→원 시작점으로 점프하지만 매퍼가 체결 순간을 앵커로 잡으므로 무해
+- 검증 (2026-08-25, dev 모드 전체 파이프라인): 업링크 48.6Hz → A → 시뮬 준비·스트림 → ready 복귀 완료
+  → 30Hz 명령 전송(클램프 동작) → 주행 w=0.37 반영 → B 해제 → 대기 복귀. IK 3-4ms/solve.
+  헤드리스 크로미움 스크린샷으로 로봇 조립 상태·아바타·포인트클라우드(합성 구)·HUD(sqz=1.0) 렌더링 확인
+
+## 개발 PC 환경 (Desktop/vr-teleop, 2026-08-25)
+
+- 컨테이너 `airlab_hw_teleop`이 옛 사본(`Desktop/school/teleop`, init 커밋에 정체)을 마운트하고 있었음
+  → 현 저장소의 docker/에서 `docker compose up -d`로 재생성 (마운트가 현 저장소로 교체됨)
+- 로컬 이미지는 08-23 09:35 빌드(모델 미내장·ENV 없음) — 모델이 저장소로 이관된 뒤로는 그대로 사용 가능
+- dev 모드 기동 (이 PC):
+  `docker exec -d airlab_hw_teleop bash -c 'cd /workspace && TELEOP_MODE=dev python -m teleop.main >> logs/web_api.log 2>&1'`
+- 이 PC 파일 소유자는 uid 1000 (내장 PC의 1001과 다름) — 컨테이너 산출물 chown 시 1000:1000
+- 헤드리스 크로미움은 이 컨테이너에도 설치해 둠 (렌더링 체크용, 컨테이너 재생성 시 재설치 필요)
+- 서버 종료 시 `/proc` 스캔 패턴 주의: kill 명령 문자열 자체가 `teleop.main`을 포함하면 자기 자신을 죽인다
+  → `case "$c" in python*teleop.main*)` 처럼 python 프로세스만 매칭할 것
 
 ## 단계 진행 현황
 

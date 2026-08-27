@@ -20,6 +20,11 @@ export function createScene(canvas) {
     );
     camera.attachControl(canvas, true);
     camera.wheelDeltaPercentage = 0.01;
+    // 방향키 기본 바인딩 해제 — 수동 조작(주행 키)과 충돌한다. 궤도 조작은 마우스로 충분
+    camera.keysUp = [];
+    camera.keysDown = [];
+    camera.keysLeft = [];
+    camera.keysRight = [];
 
     // 조명은 방향성 없는 반구광 하나로 충분 (표시물은 라인·HUD 위주)
     new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
