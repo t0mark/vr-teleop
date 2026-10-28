@@ -8,6 +8,8 @@
 // - PC 브라우저: **관찰 시점**. 로봇 전체 + 조작자 아바타를 나란히 놓고 포인트클라우드까지 함께 본다.
 //
 // 포인트클라우드는 두 시점 모두 로봇 base 기준(씬 원점)에 놓여 로봇 주변에 그려진다.
+// 통신은 전부 WebRTC 하나(RtcLink)로 이뤄진다 — state 채널(포즈·상태·명령)과 pcd 채널(포인트클라우드)
+// (rtc_link.js).
 
 import { createScene } from "./render/scene.js";
 import { Hud, formatSample } from "./render/hud.js";
@@ -16,8 +18,7 @@ import { RobotView } from "./render/robot_view.js";
 import { PointCloudView } from "./render/pointcloud_view.js";
 import { PoseReader } from "./xr/pose_reader.js";
 import { createXR, enterVR, isVRSupported } from "./xr/xr_session.js";
-import { PoseUplink } from "./net/uplink.js";
-import { MonitorLink } from "./net/monitor.js";
+import { RtcLink } from "./net/rtc_link.js";
 import { decodePointCloud } from "./net/pointcloud.js";
 import { ManualControl } from "./manual_control.js";
 
@@ -43,7 +44,7 @@ async function boot() {
     const pcdView = new PointCloudView(scene);
     // 로봇 상태 공급자(robot/sim)를 HUD에 표시하기 위해 마지막 값을 들고 있는다
     const robotStatus = { source: "?", live: false, armed: null };
-    const onBinary = (buf) => _routeBinary(buf, pcdView);
+    const onPcdPacket = (buf) => _routeBinary(buf, pcdView);
 
     // immersive-vr 미지원(PC)에서는 XR 경험 자체를 만들지 않는다
     // (유휴 XR 카메라가 씬에 남으면 데스크톱 렌더링을 오염시킬 수 있음)
@@ -54,10 +55,10 @@ async function boot() {
     if (xr && xr.baseExperience) {
         // VR 기기: 로봇 시점이므로 팔 계통만 그린다
         robotView.setVisibleParts("arms");
-        const uplink = new PoseUplink(
-            (msg) => _routeRobotMessage(msg, robotView, robotStatus), onBinary,
+        const rtc = new RtcLink(
+            (msg) => _routeRobotMessage(msg, robotView, robotStatus), onPcdPacket,
         );
-        uplink.connect();
+        rtc.connect();
 
         enterBtn.hidden = false;
         statusEl.textContent = "VR 사용 가능 - Enter VR을 누르세요";
@@ -68,7 +69,7 @@ async function boot() {
         });
 
         _wireSessionLifecycle(scene, xr, hud, statusEl, enterBtn, robotView);
-        _wireFrameLoop(xr, hud, poseReader, uplink, pcdView, robotStatus);
+        _wireFrameLoop(xr, hud, poseReader, rtc, pcdView, robotStatus);
     } else {
         // PC: 로봇 전체 + 조작자 아바타 + 포인트클라우드를 관찰한다
         robotView.setVisibleParts("all");
@@ -80,10 +81,10 @@ async function boot() {
 
         const modeBtn = document.getElementById("modeBtn");
         const modeUi = { mode: null, switching: false };
-        // 수동 조작 패널: VR 대신 같은 형식의 샘플을 같은 업링크로 보낸다 (dev 모드에서만 표시)
+        // 수동 조작 패널: VR 대신 같은 형식의 샘플을 같은 연결로 보낸다 (dev 모드에서만 표시)
         const manual = new ManualControl();
 
-        const monitor = new MonitorLink((msg) => {
+        const rtc = new RtcLink((msg) => {
             if (msg.type === "mode_status") {
                 _applyModeStatus(msg, modeUi, modeBtn, manual);
                 return;
@@ -94,10 +95,11 @@ async function boot() {
                 `로봇: ${_robotStatus(robotStatus)}`,
                 _pcdStatus(pcdView),
             ]));
-        }, onBinary);
-        monitor.connect();
+        }, onPcdPacket);
+        rtc.connect();
 
-        _wireModeButton(modeBtn, modeUi, monitor);
+        manual.setLink(rtc);
+        _wireModeButton(modeBtn, modeUi, rtc);
         window.__teleop_manual = manual;
     }
 
@@ -128,7 +130,7 @@ function _routeRobotMessage(msg, robotView, status) {
 }
 
 /**
- * 서버 발신 바이너리 패킷을 디코드해 포인트클라우드 뷰로 전달한다. 반환값 없음.
+ * pcd DataChannel로 받은 바이너리 패킷을 디코드해 포인트클라우드 뷰로 전달한다. 반환값 없음.
  */
 function _routeBinary(buf, pcdView) {
     const pcd = decodePointCloud(buf);
@@ -161,7 +163,7 @@ function _applyModeStatus(msg, ui, modeBtn, manual) {
  * 모드 버튼 클릭 → set_mode 명령 전송을 연결한다. 반환값 없음.
  * 실로봇에 연결하는 deploy 전환만 확인 대화상자를 거친다 (dev 전환은 항상 안전).
  */
-function _wireModeButton(modeBtn, ui, monitor) {
+function _wireModeButton(modeBtn, ui, rtc) {
     modeBtn.addEventListener("click", () => {
         if (ui.switching || ui.mode === null) return;
         const target = ui.mode === "deploy" ? "dev" : "deploy";
@@ -169,7 +171,7 @@ function _wireModeButton(modeBtn, ui, monitor) {
             !confirm("deploy 모드로 전환합니다.\n실로봇(RBY1)에 연결됩니다 — 로봇 주변 안전을 확인했습니까?")) {
             return;
         }
-        if (!monitor.send({ type: "set_mode", mode: target })) {
+        if (!rtc.send({ type: "set_mode", mode: target })) {
             alert("서버 연결이 끊겨 있어 전환 요청을 보낼 수 없습니다.");
         }
     });
@@ -189,7 +191,7 @@ function _pcdStatus(pcdView) {
 function _robotStatus(status) {
     const label = status.source === "robot" ? "실로봇" : "시뮬레이션";
     const armed = status.armed === null ? "" :
-        status.armed ? " | 제어 중 (B=해제)" : " | 제어 대기 — A를 눌러 시작";
+        status.armed ? " | 제어 중 (A=ready 복귀, B=해제)" : " | 제어 대기 — A를 눌러 시작";
     return `${label}${status.live ? "" : " (측정값 없음)"}${armed}`;
 }
 
@@ -222,21 +224,29 @@ function _wireSessionLifecycle(scene, xr, hud, statusEl, enterBtn, robotView) {
  * XR 카메라를 로봇 머리 장착 카메라 위치에 고정한다. 반환: 해제 함수.
  *
  * XR 카메라의 위치는 헤드셋이 매 프레임 덮어쓰므로 직접 옮길 수 없다. 대신 부모 노드를 두고
- * 부모 위치 = 목표 - 카메라 로컬 위치로 잡아 월드 위치를 목표에 고정한다 (회전은 건드리지 않아
- * 고개 돌리기는 그대로 동작한다). 갱신은 XR 카메라가 갱신된 뒤인 렌더 직전에 한다.
+ * 부모 위치 = 목표 - 카메라 로컬 위치로 잡아 월드 위치를 목표에 고정한다.
+ *
+ * 앵커에 y축 180도 회전을 주는 이유: 로봇 정면은 씬 +z 방향인데(scene.js의 데스크톱 카메라 배치
+ * 참고), WebXR 세션은 기본적으로 "Enter VR"을 누른 순간 사용자가 실제로 보고 있는 방향을 씬 -z(전방)로
+ * 매핑한다 — 즉 아무 보정 없이 부모 회전을 항등으로 두면 사용자 정면과 로봇 정면이 정반대가 되어
+ * 로봇을 등지고 선 것처럼 보인다. 180도 회전은 x·z축 부호만 뒤집으므로(y축 회전이라 높이는 불변)
+ * 위치 계산도 그만큼 보정한다. 고개 돌리기 자체는 헤드셋이 매 프레임 갱신하는 카메라 로컬 회전이라
+ * 이 앵커 회전과 무관하게 그대로 동작한다.
  */
 function _attachViewToRobotHead(scene, xr, robotView) {
     const anchor = new BABYLON.TransformNode("xrViewAnchor", scene);
+    anchor.rotationQuaternion = BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Y, Math.PI);
     const camera = xr.baseExperience.camera;
     camera.parent = anchor;
 
     const observer = scene.onBeforeRenderObservable.add(() => {
         const target = robotView.cameraAnchorPosition();
         if (target === null) return;
+        // world = anchor.position + R_anchor · camera.position, R_anchor(x,y,z) = (-x,y,-z)
         anchor.position.set(
-            target.x - camera.position.x,
+            target.x + camera.position.x,
             target.y - camera.position.y,
-            target.z - camera.position.z,
+            target.z + camera.position.z,
         );
     });
 
@@ -250,7 +260,7 @@ function _attachViewToRobotHead(scene, xr, robotView) {
 /**
  * XR 프레임마다 포즈를 수집·업링크 전송하고 일정 주기로 HUD를 갱신한다. 반환값 없음.
  */
-function _wireFrameLoop(xr, hud, poseReader, uplink, pcdView, robotStatus) {
+function _wireFrameLoop(xr, hud, poseReader, rtc, pcdView, robotStatus) {
     let lastHudUpdate = 0;
 
     xr.baseExperience.sessionManager.onXRFrameObservable.add((frame) => {
@@ -260,7 +270,7 @@ function _wireFrameLoop(xr, hud, poseReader, uplink, pcdView, robotStatus) {
         if (!frame || !refSpace || !session) return;
 
         const sample = poseReader.read(frame, refSpace, session);
-        uplink.send(sample);
+        rtc.sendPose(sample);
 
         // 수집·전송은 매 프레임, 표시는 10Hz
         const now = performance.now();
@@ -268,7 +278,7 @@ function _wireFrameLoop(xr, hud, poseReader, uplink, pcdView, robotStatus) {
             lastHudUpdate = now;
             hud.update(formatSample(sample, [
                 `body-tracking: ${poseReader.bodyJointNames === null ? "대기/미지원" : "활성"}` +
-                ` | uplink: ${uplink.connected ? `${uplink.txHz}Hz` : "끊김"}`,
+                ` | uplink: ${rtc.connected ? `${rtc.txHz}Hz` : "끊김"}`,
                 `로봇: ${_robotStatus(robotStatus)}`,
                 _pcdStatus(pcdView),
             ]));

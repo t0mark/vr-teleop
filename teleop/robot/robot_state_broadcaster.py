@@ -1,7 +1,7 @@
 """로봇 상태 서비스: 관절 측정값을 주기적으로 읽어 FK로 링크 포즈를 만들고 방송한다.
 
 데이터 흐름: JointSource.joint_positions() → RobotModel.fk_visual(전체 모델)
-             → WebXR 좌표 변환 → WebSocketHub.broadcast_state({type: robot_state})
+             → WebXR 좌표 변환 → RtcHub.broadcast_state({type: robot_state})
 
 공급자(JointSource)는 로봇 백엔드(실물 또는 시뮬)다. 브라우저는
 어느 쪽인지 몰라도 되지만, 무엇을 보고 있는지 알 수 있게 메시지에 source 필드를 실어 보낸다.
@@ -32,14 +32,14 @@ def _log_task_exception(task: asyncio.Task):
 class RobotStateBroadcaster:
     """상태 방송 루프와 시각화 메타(robot_config) 등록을 소유한다."""
 
-    def __init__(self, ws_hub, robot_model, joint_source: JointSource,
+    def __init__(self, rtc_hub, robot_model, joint_source: JointSource,
                  gripper_source=None, control_source=None,
                  rate_hz: float = config.ROBOT_STATE_RATE_HZ, source_name: str = "sim"):
         """gripper_source: 관절 공급자에 그리퍼 값이 없을 때 대신 쓸 공급자 — gripper_openness()만 있으면 된다 (RobotController의 트리거 해석 등).
 
         control_source: 제어 상태 표시용 — armed 속성만 있으면 된다 (RobotController).
         """
-        self._hub = ws_hub
+        self._hub = rtc_hub
         self._rm = robot_model
         self._source = joint_source
         self._gripper_source = gripper_source

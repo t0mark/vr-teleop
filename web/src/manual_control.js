@@ -1,15 +1,13 @@
 // 수동 조작 (dev 모드 데스크톱 전용): VR 컨트롤러 대신 패널 입력으로 업링크 샘플을 만든다.
 //
 // 원칙: **입력 값의 출처만 다르고 코드 경로는 VR과 동일하다.**
-// PoseReader가 XRFrame에서 만드는 것과 같은 형식의 샘플을 만들어 같은 PoseUplink(/ws/pose)로
-// 보내므로, 서버(웹소켓 허브 → pose_to_target → ik_solver → robot_controller)는 이 클라이언트가
-// Quest인지 패널인지 구분할 수 없다.
+// PoseReader가 XRFrame에서 만드는 것과 같은 형식의 샘플을 만들어 데스크톱 뷰와 같은 RtcLink의
+// state 채널로 보내므로, 서버(rtc_hub → pose_to_target → ik_solver → robot_controller)는 이
+// 클라이언트가 Quest인지 패널인지 구분할 수 없다.
 //
 // 손 위치는 rest 자세 기준 오프셋 슬라이더다 — 클러치 델타 매핑은 grip 체결 순간을 앵커로 잡고
 // 이후의 델타만 이식하므로, grip을 켠 채 슬라이더를 움직인 거리가 곧 로봇 TCP의 이동 거리(1m=1m)가 된다.
 // body 조인트(어깨·팔꿈치)는 tools/fake_vr_quest3.py와 같은 근사로 합성한다.
-
-import { PoseUplink } from "./net/uplink.js";
 
 // 송신 주기(ms): 서버 IK 30Hz와 같은 급이면 충분
 const SEND_INTERVAL_MS = 33;
@@ -52,7 +50,7 @@ export class ManualControl {
             b: false,
             stick: [0, 0],
         };
-        this._uplink = null;
+        this._link = null;
         this._timer = null;
         this._devMode = false;
         // 키보드 홀드 상태: 이동 {code: side}, 트리거 {side}, 방향키 {code}
@@ -64,6 +62,13 @@ export class ManualControl {
         this._pressHold = { a: 0, b: 0 };
         this._bindDom();
         this._bindKeyboard();
+    }
+
+    /**
+     * 공유 RtcLink를 등록한다 (데스크톱 모니터링 뷰와 같은 연결을 재사용). 반환값 없음.
+     */
+    setLink(link) {
+        this._link = link;
     }
 
     /**
@@ -85,15 +90,9 @@ export class ManualControl {
         this._enableEl.checked = on;
         this._fieldsets.forEach((f) => (f.disabled = !on));
         if (on && this._timer === null) {
-            // 업링크는 첫 활성화 때 1회 접속 (VR과 같은 클래스·같은 소켓 경로).
-            // 다운링크 표시는 모니터 소켓이 담당하므로 이 소켓의 수신은 버린다
-            if (this._uplink === null) {
-                this._uplink = new PoseUplink(() => {}, null);
-                this._uplink.connect();
-            }
             this._timer = setInterval(() => {
                 this._applyHeldKeys(SEND_INTERVAL_MS / 1000);
-                this._uplink.send(this._sample());
+                this._link?.sendPose(this._sample());
             }, SEND_INTERVAL_MS);
         } else if (!on && this._timer !== null) {
             clearInterval(this._timer);

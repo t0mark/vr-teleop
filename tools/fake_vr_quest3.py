@@ -1,7 +1,8 @@
-"""Quest 대체 합성 포즈 송신기 (dev 모드용): 서버의 /ws/pose에 가짜 업링크 샘플을 보낸다.
+"""Quest 대체 합성 포즈 송신기 (dev 모드용): 서버와 WebRTC로 협상해 가짜 업링크 샘플을 보낸다.
 
 실기기 없이 조작 시나리오 전체를 재현해 IK·제어·그리퍼·모바일 베이스 경로를 자극한다.
 샘플 형식은 web/src/xr/pose_reader.js의 실제 업링크와 동일하다 (WebXR 좌표: x=우, y=상, -z=전방, m).
+시그널링(HTTP POST /rtc/offer)·state 채널 송신은 web/src/net/rtc_link.js와 같은 방식이다.
 
 시나리오 (1사이클, 초):
      0-2   대기 (손 rest 자세)
@@ -31,6 +32,9 @@ from pathlib import Path
 # → 저장소 루트를 넣어 어느 위치에서 실행해도 동작하게 한다
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import aiohttp
+from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
+
 from teleop.utils import config
 from teleop.utils.log import setup_logging
 
@@ -54,6 +58,10 @@ _HAND_REST = {"right": (0.30, 1.00, -0.25), "left": (-0.30, 1.00, -0.25)}
 _CIRCLE_CENTER = {"right": (0.30, 1.20, -0.40), "left": (-0.30, 1.20, -0.40)}
 _CIRCLE_RADIUS = 0.15
 _CIRCLE_OMEGA = 1.25
+
+# STUN 서버 없음: 로봇 내장 PC 안에서 자기 자신에게 접속하는 것도, Quest 직결 환경도
+# NAT 통과가 필요 없다 (teleop/net/rtc_hub.py와 동일한 이유)
+_RTC_CONFIG = RTCConfiguration(iceServers=[])
 
 
 def _phase_at(t: float) -> str:
@@ -163,25 +171,56 @@ class FakeQuest:
 
     # ── 송수신 루프 ──────────────────────────────────────────────────────────
 
-    async def run(self, uri: str):
-        """서버에 접속해 시나리오를 사이클 수만큼 송신한다. 반환값 없음."""
-        import websockets
-
+    async def run(self, host: str, port: int):
+        """서버와 WebRTC로 협상해 시나리오를 사이클 수만큼 송신한다. 반환값 없음."""
         # 자체 서명 인증서 환경이므로 검증을 끈다 (Quest 브라우저의 인증서 예외 허용과 같은 역할)
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
 
-        async with websockets.connect(uri, ssl=ctx, max_size=None) as ws:
-            logger.info(f"업링크 접속: {uri}, {self._rate_hz:.0f} Hz, {self._cycles}사이클 ({_CYCLE_S:.0f}초/사이클)")
-            consumer = asyncio.create_task(self._consume(ws))
-            try:
-                await self._send_loop(ws)
-            finally:
-                consumer.cancel()
+        pc = RTCPeerConnection(configuration=_RTC_CONFIG)
+        state_ch = pc.createDataChannel("state", ordered=True)
+        pcd_ch = pc.createDataChannel("pcd", ordered=False, maxRetransmits=0)
+        opened = asyncio.Event()
+
+        @state_ch.on("open")
+        def _on_open():
+            opened.set()
+
+        @state_ch.on("message")
+        def _on_state_message(data):
+            # 실제 클라이언트라면 반드시 소비해야 하는 다운링크(robot_state 등) — 여기선 개수만 센다
+            if '"robot_state"' in data:
+                self._rx_state += 1
+
+        @pcd_ch.on("message")
+        def _on_pcd_message(_data):
+            self._rx_pcd += 1
+
+        offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        while pc.iceGatheringState != "complete":
+            await asyncio.sleep(0.05)
+
+        offer_url = f"https://{host}:{port}{config.RTC_OFFER_PATH}"
+        logger.info(f"WebRTC 협상: {offer_url}, {self._rate_hz:.0f} Hz, {self._cycles}사이클 ({_CYCLE_S:.0f}초/사이클)")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                offer_url,
+                json={"sdp": pc.localDescription.sdp, "type": pc.localDescription.type},
+                ssl=ssl_ctx,
+            ) as resp:
+                answer = await resp.json()
+        await pc.setRemoteDescription(RTCSessionDescription(sdp=answer["sdp"], type=answer["type"]))
+
+        await opened.wait()
+        try:
+            await self._send_loop(state_ch)
+        finally:
+            await pc.close()
         logger.info(f"종료: 송신 {self._sent}건, 수신 robot_state {self._rx_state}건, 포인트클라우드 {self._rx_pcd}건")
 
-    async def _send_loop(self, ws):
+    async def _send_loop(self, channel):
         """고정 주기로 샘플을 송신한다 (사이클 완료까지). 반환값 없음."""
         period = 1.0 / self._rate_hz
         t0 = time.monotonic()
@@ -192,7 +231,7 @@ class FakeQuest:
             elapsed = now - t0
             if elapsed >= total:
                 return
-            await ws.send(json.dumps(self.sample(elapsed % _CYCLE_S)))
+            channel.send(json.dumps(self.sample(elapsed % _CYCLE_S)))
             self._sent += 1
             if now - stats_t >= 5.0:
                 logger.info(
@@ -201,17 +240,6 @@ class FakeQuest:
                 )
                 stats_t = now
             await asyncio.sleep(max(0.0, period - (time.monotonic() - now)))
-
-    async def _consume(self, ws):
-        """서버 다운링크(robot_state·포인트클라우드)를 소비하며 수신 수만 센다 (태스크 본체).
-
-        읽지 않으면 TCP 배압이 서버 송신 큐 드롭을 유발하므로 반드시 비운다 (실제 클라이언트 역할).
-        """
-        async for msg in ws:
-            if isinstance(msg, bytes):
-                self._rx_pcd += 1
-            elif '"robot_state"' in msg:
-                self._rx_state += 1
 
 
 def main():
@@ -224,9 +252,8 @@ def main():
     args = parser.parse_args()
 
     setup_logging()
-    uri = f"wss://{args.host}:{args.port}{config.POSE_WS_PATH}"
     try:
-        asyncio.run(FakeQuest(args.rate, args.cycles).run(uri))
+        asyncio.run(FakeQuest(args.rate, args.cycles).run(args.host, args.port))
     except KeyboardInterrupt:
         logger.info("중단 요청 수신, 종료")
 

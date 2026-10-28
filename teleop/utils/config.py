@@ -52,9 +52,9 @@ HTTPS_PORT = 8443
 HTTPS_STD_PORT = 443
 HTTP_REDIRECT_PORT = 80
 
-# WSS 경로: 포즈 업링크(VR → 서버), 모니터 다운링크(서버 → 데스크톱 뷰)
-POSE_WS_PATH = "/ws/pose"
-MONITOR_WS_PATH = "/ws/monitor"
+# WebRTC 시그널링 경로: SDP offer를 POST하면 answer를 JSON으로 반환한다 (지속 연결 아님 — 1회 왕복).
+# 이후 통신(포즈 업링크·robot_state·포인트클라우드 등)은 전부 DataChannel로 흐른다 (rtc_hub.py 참고)
+RTC_OFFER_PATH = "/rtc/offer"
 
 # 포즈 파이프라인 상태 로그 주기(초)와 샘플 신선도 한계(초, 초과 시 IK 입력 무효)
 POSE_STATS_INTERVAL_S = 5.0
@@ -68,8 +68,11 @@ GRIPPER_TCP_OFFSET = (0.0, 0.0, -0.12)
 IK_RATE_HZ = 30.0
 IK_MAX_ITER = 6
 # 코스트 가중치: TCP 위치 최우선, 자세는 손목 관절 추종이 체감되는 수준,
-# 팔꿈치는 자세 유도 보조 (body-tracking 있을 때만), ready 바이어스는 여유 자유도 해소용
-IK_W_POS = 50.0
+# 팔꿈치는 자세 유도 보조 (body-tracking 있을 때만), ready 바이어스는 여유 자유도 해소용.
+# 위치:자세 비율이 작으면 작업 공간 경계에서 솔버가 자세를 지키려고 위치를 포기해 팔이 덜 뻗는다
+# (오프라인 비교: 50:8이면 옆 0.46 m·아래 0.34 m에서 멈춤, 2000:8이면 기구학 한계 0.55·0.43 m까지 도달).
+# 위치가 닿는 영역에서는 7자유도 여유로 자세도 그대로 맞으므로 자세 추종은 손해 보지 않는다
+IK_W_POS = 2000.0
 IK_W_ROT = 8.0
 IK_W_ELBOW = 10.0
 IK_W_REG = 0.5
@@ -80,24 +83,23 @@ IK_W_READY = 0.02
 IK_VEL_FRACTION = 0.5
 IK_MAX_JOINT_VEL = 1.5
 
-# 안전 관절 한계 (실사용 검증된 custom-teleop의 add_joint_limit 값, rad):
-# arm_3(팔꿈치) 완전 신전 금지 — 특이점·몸통 스침 방지 / arm_5 역방향 꺾임 금지 — 콜리전 방지
+# 안전 관절 한계 (Unity teleop 예제의 팔 개별 제어 모드 add_joint_limit 값, rad):
+# arm_3(팔꿈치) 완전 신전 금지 — 특이점·몸통 스침 방지.
+# arm_5(손목 피치)는 예제와 같이 URDF 한계(-1.57 - 1.92)를 그대로 쓴다 — (0.2, 1.9)로 묶으면
+# 손목을 아래로 꺾는 자세가 막혀 실사용 중 arm_5가 하한에 박히고 팔 도달 범위까지 줄었다
 SAFETY_JOINT_LIMITS = {
     "right_arm_3": (-2.6, -0.5),
     "left_arm_3": (-2.6, -0.5),
-    "right_arm_5": (0.2, 1.9),
-    "left_arm_5": (0.2, 1.9),
 }
 
 # 클러치: grip(squeeze)이 이 값을 넘는 동안만 추종 (custom-teleop과 동일 임계값)
 GRIP_ENGAGE_THRESHOLD = 0.8
 
-# 오른손 A 버튼(xr-standard 게임패드 인덱스 4) → ready pose 복귀
+# 오른손 A 버튼(xr-standard 게임패드 인덱스 4) → 제어 시작 + ready pose 복귀 (제어 중에 누르면 ready 복귀만)
 GAMEPAD_BUTTON_A = 4
 
-# 사람→로봇 팔 매핑: 클러치 델타 방식 (1m = 1m). 가슴 폴백 높이는 몸통 프레임 기준점용
+# 사람→로봇 팔 매핑: 클러치 델타 방식 (1m = 1m)
 ARM_SCALE = 1.0
-FALLBACK_CHEST_HEIGHT = 1.35
 
 # Quest 직결 서버 IP: PC 이더넷 인터페이스를 NetworkManager "공유" 모드로 사용
 # (공유 모드가 PC를 10.42.0.1로 고정하고 Quest에 DHCP 할당). 인증서 SAN 기본값으로도 사용
@@ -123,12 +125,27 @@ CM_UNLIMITED_MODE = True
 HEAD_PID_GAINS = {"head_0": (200, 0, 8000), "head_1": (200, 0, 8000)}
 # 제어 준비(wait_for_control_ready) 대기 상한
 CONTROL_READY_TIMEOUT_MS = 1000
+# 관절 임피던스 게인 (토르소·양팔, Unity teleop 예제의 스트리밍 값). 제어기 토크는
+# τ = K(q_d - q) + D(q̇_d - q̇) + τ_중력보상 이고 관절별로 토크 제한에서 포화된다 (SDK 규약).
+# 토크 제한은 중력 보상분까지 포함한 전체 토크에 걸리므로 자기 무게를 버틸 만큼 남겨야 한다.
+# stiffness(Nm/rad)가 접촉 시 밀리는 정도를 정한다: 팔 80 Nm/rad면 0.1 rad 밀릴 때 8 Nm로 버틴다
+IMPEDANCE_GAINS = {
+    "torso": {"stiffness": [500.0] * 6, "torque_limit": [600.0] * 6, "damping_ratio": 0.7},
+    "arm": {
+        "stiffness": [80.0, 80.0, 80.0, 60.0, 60.0, 60.0, 60.0],
+        "torque_limit": [40.0, 40.0, 40.0, 30.0, 30.0, 30.0, 30.0],
+        "damping_ratio": 0.85,
+    },
+}
 
 # 안전장치
 # - 입력 두절: VR 업링크가 이 시간 이상 끊기면 제어를 해제한다 (IK는 마지막 자세를 유지하지만,
 #   조작자가 사라진 상태로 스트림을 유지할 이유가 없다)
 CONTROL_INPUT_TIMEOUT_S = 3.0
-# - 추적 오차: 명령과 측정 관절각 차이가 이 값(rad)을 넘으면 로봇이 막힌 것으로 보고 해제한다
+# - 추적 오차: 명령과 측정 관절각 차이가 이 값(rad)을 넘으면 로봇이 막힌 것으로 보고 해제한다.
+#   임피던스 제어라 접촉하면 밀리는 게 정상이지만, 명령을 둔 채 크게 밀렸다 풀리면 스프링처럼 튀어
+#   돌아오고 이 복귀는 명령 속도 클램프가 막지 못한다. 0.5 rad × 팔 80 Nm/rad = 40 Nm로 토크 제한과
+#   비슷한 지점에서 끊는다
 CONTROL_MAX_TRACKING_ERR = 0.5
 # - 팔 외 관절(토르소·머리)을 ready로 보내는 속도는 URDF 한계에 이 비율을 곱한다 (팔은 IK_VEL_FRACTION).
 #   토르소는 무거우므로 보수적으로 (0.15 → torso_0-2 약 0.3 rad/s, 45°→80° 이동에 4-5초)
@@ -148,14 +165,18 @@ MOBILE_STICK_DEADZONE = 0.15
 MOBILE_SMOOTHING_TAU = 0.3
 
 # 그리퍼: 별도 Dynamixel 버스(UPC 규약 장치명), 모터 ID = 0(오른쪽)·1(왼쪽).
-# 왼쪽 모터는 기계적으로 방향이 반대라 열림 정도를 뒤집어 보낸다 (custom-teleop gripper 규약)
+# 양쪽 모두 엔코더 증가 방향이 닫힘이라 열림 정도를 뒤집어 보낸다 (실측: 반전 없으면 열림 1.0이 닫힘 끝으로 감)
 GRIPPER_DEVICE = "/dev/rby1_gripper"
 # 그리퍼 모터 전원은 본체 툴 플랜지 출력(V)에서 나온다 — 공급 전에는 버스 ping이 실패한다
 GRIPPER_TOOL_VOLTAGE = 12
 GRIPPER_POWER_SETTLE_S = 0.5
+# 로봇 전원 투입 직후에는 플랜지 전압 설정이 성공을 반환하고도 반영되지 않는다 — 상태로 확인하며 재시도
+GRIPPER_POWER_TIMEOUT_S = 30.0
+# 모터 ping 재시도 시간(초): 부팅 직후 모터가 늦게 뜨는 경우 대비
+GRIPPER_PING_TIMEOUT_S = 10.0
 GRIPPER_BAUDRATE = 2_000_000
 GRIPPER_MOTOR_IDS = {"right": 0, "left": 1}
-GRIPPER_INVERT = {"right": False, "left": True}
+GRIPPER_INVERT = {"right": True, "left": True}
 GRIPPER_RATE_HZ = 10.0
 # 호밍: 약한 전류로 양끝까지 밀어 엔코더 범위를 잰다. 엔코더 변화가 EPS(rad) 미만인 읽기가
 # STALL_COUNT회(×0.1 s) 이어지면 끝에 닿은 것으로 판정한다 (엔코더 미세 떨림 약 0.002 rad 실측 —

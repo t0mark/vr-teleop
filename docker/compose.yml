@@ -22,7 +22,14 @@ services:
       - "c 189:* rmw"
       - "c 81:* rmw"
       - "c 188:* rmw"
-    stdin_open: true
-    tty: true
-    # 개발용 상시 기동 (작업은 exec로 진입)
-    command: ["sleep", "infinity"]
+    # dockerd가 부팅 시 자동 기동되도록 등록되어 있어, 이 정책만으로 재부팅 후 컨테이너가 자동 복귀한다.
+    # 수동으로 stop한 경우에는 재부팅해도 다시 켜지지 않는다 (always와 차이).
+    restart: unless-stopped
+    environment:
+      # 저장소 compose.yml에는 안전한 기본값(dev)만 두고, 호스트별 실제 값은
+      # docker/.env(gitignore, 미포함)에서 오버라이드한다. 이 PC(로봇 내장 PC)는 .env에서 deploy로 고정.
+      - TELEOP_MODE=${TELEOP_MODE:-dev}
+    # 컨테이너 기동 = 서비스 기동. 초기 모드 접속 실패는 main.py가 SystemExit하며,
+    # restart 정책에 의해 재시도된다 (로봇 gRPC·D455가 늦게 준비되는 부팅 경합 상황에 대한 자연스러운 재시도).
+    command: >
+      bash -c "mkdir -p logs && exec python -m teleop.main >> logs/web_api.log 2>&1"

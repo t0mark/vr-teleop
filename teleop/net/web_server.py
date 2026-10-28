@@ -1,7 +1,7 @@
-"""HTTPS 정적 파일 서버 + WSS 라우트: web/ 프론트엔드 서빙과 포즈 파이프라인 소켓을 연다.
+"""HTTPS 정적 파일 서버 + WebRTC 시그널링 라우트: web/ 프론트엔드 서빙과 offer/answer 교환을 연다.
 
 접속 편의를 위해 3개 포트를 연다.
-- 8443: HTTPS 본 포트 (WSS 포즈 업링크·모니터 다운링크 포함)
+- 8443: HTTPS 본 포트 (WebRTC 시그널링 POST 포함)
 - 443: HTTPS 별칭 — 주소창에 https://IP 만 입력해도 접속되게 함
 - 80: HTTP → HTTPS 리다이렉트 — 주소창에 IP만 입력(기본 http)해도 접속되게 함
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from teleop.net.websocket import WebSocketHub
+from teleop.net.rtc_hub import RtcHub
 from teleop.utils import config
 
 logger = logging.getLogger("web_server")
@@ -73,8 +73,8 @@ def _compress_static_assets(roots: list[Path]):
 class WebAPIServer:
     """aiohttp 기반 HTTPS 서버(+별칭·리다이렉트 포트)를 소유·관리한다 (기동/종료 상태 유지)."""
 
-    def __init__(self, ws_hub: WebSocketHub, host: str = config.HTTP_HOST, port: int = config.HTTPS_PORT):
-        self._hub = ws_hub
+    def __init__(self, rtc_hub: RtcHub, host: str = config.HTTP_HOST, port: int = config.HTTPS_PORT):
+        self._hub = rtc_hub
         self._host = host
         self._port = port
         self._runner: web.AppRunner | None = None
@@ -96,9 +96,8 @@ class WebAPIServer:
     def _build_app(self) -> web.Application:
         """라우트가 구성된 aiohttp Application을 생성해 반환한다."""
         app = web.Application(middlewares=[self._no_cache_middleware])
-        # WSS 라우트를 정적 라우트보다 먼저 등록해야 /ws/* 가 파일 경로로 오인되지 않는다
-        app.router.add_get(config.POSE_WS_PATH, self._hub.handle_pose_ws)
-        app.router.add_get(config.MONITOR_WS_PATH, self._hub.handle_monitor_ws)
+        # 시그널링 라우트를 정적 라우트보다 먼저 등록해야 경로가 파일로 오인되지 않는다
+        app.router.add_post(config.RTC_OFFER_PATH, self._handle_rtc_offer)
         # 로봇 시각화용 GLB 메시 (assets/rby1a의 URDF 동반 리소스를 읽기 전용 서빙)
         app.router.add_static(config.MESH_URL_PREFIX, config.RBY1_MESH_DIR, show_index=False)
         # 공용 정적 자산 (아바타·카메라 GLB 등) — web/ 밖의 assets/를 /assets/ URL로 서빙
@@ -113,6 +112,20 @@ class WebAPIServer:
         # 접속 확인이 곧 연결 진단이므로 클라이언트 주소를 실행 로그로 남긴다
         logger.info(f"페이지 요청: {request.remote}")
         return web.FileResponse(config.WEB_ROOT / "index.html")
+
+    async def _handle_rtc_offer(self, request: web.Request) -> web.Response:
+        """POST /rtc/offer: SDP offer를 받아 WebRTC 협상 후 answer를 JSON으로 반환한다.
+
+        지속 연결이 아니라 요청 1개로 끝난다 — 이후 통신은 협상된 DataChannel로 흐른다.
+        """
+        try:
+            data = await request.json()
+            answer = await self._hub.handle_offer(data["sdp"], data["type"])
+        except Exception as e:
+            logger.error(f"WebRTC 협상 실패 ({request.remote}): {type(e).__name__}: {e}")
+            raise web.HTTPBadRequest(text=f"WebRTC 협상 실패: {e}")
+        logger.info(f"WebRTC 협상 완료: {request.remote}")
+        return web.json_response(answer)
 
     async def _handle_redirect(self, request: web.Request) -> web.Response:
         """평문 HTTP 요청을 같은 호스트의 HTTPS로 301 리다이렉트한다."""

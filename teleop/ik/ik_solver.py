@@ -10,6 +10,9 @@
 - 자세는 회전행렬 Frobenius 오차 (log6는 오차 0에서 미분 NaN이라 배제)
 - 팔꿈치 코스트: 어깨→팔꿈치 벡터를 목표(사람 팔 방향×로봇 상완)에 정렬. 가중치를
   파라미터로 받아 목표가 없으면(w=0) 자동 비활성 — 그때는 ready 바이어스가 여유 자유도 해소
+- 클러치 미체결 팔은 관절각을 이전 해 그대로 고정한다. 손목 포즈만 유지 목표로 주면 ready
+  바이어스가 매 주기 조금씩 ready 쪽으로 끌고, 다음 주기 유지 목표가 그 자리로 갱신되어
+  가만히 둔 팔이 천천히 처지는 드리프트가 누적된다 (30초에 손목 약 30 cm 실측)
 """
 
 import logging
@@ -30,6 +33,12 @@ class ArmIkSolver:
     def __init__(self, robot_model):
         self._rm = robot_model
         self._q_prev = robot_model.q_ready.copy()
+        # 팔별 축소 모델 q 인덱스: 미체결 팔의 관절각을 이전 해로 고정할 때 쓴다
+        arm_idx = robot_model.arm_q_indices()
+        self._side_idx = {
+            side: np.array([idx for name, idx in arm_idx.items() if name.startswith(f"{side}_arm_")])
+            for side in ("left", "right")
+        }
         self._build_nlp()
 
     def _build_nlp(self):
@@ -94,10 +103,16 @@ class ArmIkSolver:
 
         targets: {side: {wrist_pos(3), wrist_quat(4), elbow_vec(3)|None} | None} — 로봇 base 프레임.
         wrist는 TCP 목표, elbow_vec은 어깨 기준 팔꿈치 목표 벡터(없으면 팔꿈치 코스트 비활성).
-        side가 None이면(클러치 미체결) 해당 팔은 현재 자세를 목표로 삼아 유지한다.
+        side가 None이면(클러치 미체결) 해당 팔은 관절각을 이전 해 그대로 고정한다.
         dt: 이전 solve 후 경과 시간(초). 관절 속도 제한의 스텝 크기로 사용 (기본: IK 주기).
         """
-        # 미체결 팔의 유지 목표로 쓸 현재 손목 포즈 (이전 해 기준 FK)
+        held = [side for side in ("left", "right") if targets[side] is None]
+        # 양팔 모두 미체결이면 풀 것이 없다 — 이전 해를 그대로 유지
+        if len(held) == 2:
+            return self._q_prev.copy()
+
+        # 미체결 팔의 유지 목표로 쓸 현재 손목 포즈 (이전 해 기준 FK) — 체결 팔 solve 중
+        # 반대 팔이 코스트 없이 떠돌지 않게 하는 용도이고, 결과는 아래에서 이전 해로 덮어쓴다
         hold_fk = self._rm.fk_frames(self._q_prev)
 
         p = []
@@ -138,6 +153,10 @@ class ArmIkSolver:
         max_step = self._vel_limit * (dt if dt is not None else 1.0 / config.IK_RATE_HZ)
         dq = np.clip(q - self._q_prev, -max_step, max_step)
         q = self._q_prev + dq
+
+        # 미체결 팔 고정: ready 바이어스에 의한 유지 목표 드리프트 차단
+        for side in held:
+            q[self._side_idx[side]] = self._q_prev[self._side_idx[side]]
 
         self._q_prev = q
         return q.copy()

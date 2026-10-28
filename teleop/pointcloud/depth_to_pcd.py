@@ -7,7 +7,7 @@
 로봇 base 프레임, 다시 기저 변환으로 WebXR 프레임까지 하나의 3x3 행렬·오프셋으로 합성해
 한 번의 행렬곱으로 처리한다.
 
-패킹 (pack_pointcloud): 서버 → 브라우저 WSS 바이너리 패킷 레이아웃 (리틀엔디언):
+패킹 (pack_pointcloud): 서버 → 브라우저 WebRTC DataChannel 바이너리 패킷 레이아웃 (리틀엔디언):
     uint32 magic  = 0x31444350 ('PCD1' ASCII, 메시지 식별)
     uint32 count  = N
     float64 t     = 서버 송신 시각(초, time.time)

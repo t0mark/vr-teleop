@@ -4,7 +4,7 @@ custom-teleop의 gripper.py를 인터페이스(GripperBackend)에 맞춰 옮긴 
 - 초기화: 포트 열기 → 모터 ping → 토크 on → **호밍**(약한 전류로 양끝까지 밀어 엔코더 범위 측정)
   호밍은 그리퍼가 실제로 열렸다 닫히는 동작이며 수 초 걸리므로 전용 스레드에서 한다
 - 구동: 전류 제한 위치 제어 모드로 10 Hz마다 목표 엔코더를 쓰고 현재 엔코더를 읽는다
-- 열림 정도 규약: 0=닫힘, 1=열림. 왼쪽 모터는 방향이 반대라(config.GRIPPER_INVERT) 엔코더 정규화값을
+- 열림 정도 규약: 0=닫힘, 1=열림. 방향이 반대인 모터(config.GRIPPER_INVERT)는 엔코더 정규화값을
   뒤집어 쓰고 읽는다
 
 버스 접근은 전부 그리퍼 스레드에서만 한다. 외부는 목표·측정값만 락으로 주고받는다.
@@ -108,10 +108,14 @@ class Rby1Gripper(GripperBackend):
         self._bus.set_torque_constant([1, 1])
 
         # 두 모터가 모두 응답해야 한다 — 하나만 살아 있으면 호밍에서 무한 대기한다
+        # 전원 직후 모터가 늦게 뜰 수 있어 일정 시간 재시도한다
+        deadline = time.monotonic() + config.GRIPPER_PING_TIMEOUT_S
         for side, dev_id in self._ids.items():
-            if not self._bus.ping(dev_id):
-                logger.warning(f"그리퍼 모터 {side}(ID {dev_id}) 응답 없음, 그리퍼 비활성")
-                return False
+            while not self._bus.ping(dev_id):
+                if time.monotonic() > deadline:
+                    logger.warning(f"그리퍼 모터 {side}(ID {dev_id}) 응답 없음, 그리퍼 비활성")
+                    return False
+                time.sleep(0.5)
         self._bus.group_sync_write_torque_enable([(i, 1) for i in self._id_list])
         logger.info("그리퍼 모터 2개 응답, 토크 on")
         return True
@@ -202,7 +206,7 @@ class Rby1Gripper(GripperBackend):
             time.sleep(max(0.0, period - (time.monotonic() - t0)))
 
     def _to_encoder(self, side: str, openness: float) -> float:
-        """열림 정도(0-1)를 해당 모터 엔코더 목표로 변환한다 (왼쪽은 방향 반전)."""
+        """열림 정도(0-1)를 해당 모터 엔코더 목표로 변환한다 (GRIPPER_INVERT면 방향 반전)."""
         dev_id = self._ids[side]
         ratio = 1.0 - openness if config.GRIPPER_INVERT[side] else openness
         return ratio * (self._max_q[dev_id] - self._min_q[dev_id]) + self._min_q[dev_id]

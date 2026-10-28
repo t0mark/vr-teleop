@@ -12,6 +12,7 @@
   출발한다 (점프 없음).
 - 제어(armed=True): 오른손 A로 진입. 전원·서보·Control Manager 준비 → 스트림 열기 → ready pose로
   속도 제한 보간 이동 → 이후 클러치 추종. 팔은 IK, 토르소·머리는 ready 고정값으로 명령한다.
+  제어 중 A를 다시 누르면 언제든 ready로 복귀한 뒤 추종을 재개한다.
 
 해제 조건 (어느 것이든 스트림을 닫고 대기로 돌아간다 — 서보는 켜진 채라 로봇은 그 자리에 멈춘다):
     오른손 B / 업링크 두절(CONTROL_INPUT_TIMEOUT_S) / 명령-측정 추적 오차 초과 / 전송 실패
@@ -47,10 +48,10 @@ def _log_task_exception(task: asyncio.Task):
 class RobotController:
     """제어 상태(대기/제어), IK 상태(_last_q), 마지막 명령, 주행 속도 필터를 소유한다."""
 
-    def __init__(self, ws_hub, robot_model, solver, mapper, robot: RobotBackend,
+    def __init__(self, rtc_hub, robot_model, solver, mapper, robot: RobotBackend,
                  gripper: GripperBackend | None = None, rate_hz: float = config.CONTROL_RATE_HZ):
         """solver·mapper: main이 1회 생성해 넘기는 IK 계산기 (모드 전환 시에도 재구성하지 않는다)."""
-        self._hub = ws_hub
+        self._hub = rtc_hub
         self._rm = robot_model
         self._solver = solver
         self._mapper = mapper
@@ -64,7 +65,7 @@ class RobotController:
         self._prev_b = False
         # IK 상태: 축소 모델 관절각 (대기 중엔 측정값 시드, 제어 중엔 solve/ready 보간 결과)
         self._last_q = robot_model.q_ready.copy()
-        # ready 복귀 모드: 제어 시작 직후 True — 추종 대신 ready로 속도 제한 보간
+        # ready 복귀 모드: A를 누를 때마다(제어 시작 직후 포함) True — 추종 대신 ready로 속도 제한 보간
         self._returning = False
         # 그리퍼 열림 정도(0=닫힘, 1=열림): 트리거에서 갱신, 명령·시각화 폴백이 가져다 쓴다
         self._gripper_open = {"left": 1.0, "right": 1.0}
@@ -101,7 +102,7 @@ class RobotController:
         self._task.add_done_callback(_log_task_exception)
         logger.info(
             f"로봇 제어기 시작: {1.0 / self._period:.0f} Hz "
-            f"(A=제어 시작·ready, B=해제, 클러치: grip > {config.GRIP_ENGAGE_THRESHOLD})"
+            f"(A=제어 시작·ready 복귀(제어 중에도), B=해제, 클러치: grip > {config.GRIP_ENGAGE_THRESHOLD})"
         )
 
     async def stop(self):
@@ -147,11 +148,17 @@ class RobotController:
             await asyncio.sleep(max(0.0, self._period - (time.monotonic() - t0)))
 
     def _handle_buttons(self, sample: dict | None):
-        """A 상승 에지 → 제어 시작 요청, B 상승 에지 → 해제. 반환값 없음."""
+        """A 상승 에지 → 대기 중이면 제어 시작 요청, 제어 중이면 ready 복귀. B 상승 에지 → 해제. 반환값 없음."""
         a = hand_button(sample, "right", config.GAMEPAD_BUTTON_A)
         b = hand_button(sample, "right", config.GAMEPAD_BUTTON_B)
-        if a and not self._prev_a and not self._armed:
-            self._arm_requested = True
+        if a and not self._prev_a:
+            if not self._armed:
+                self._arm_requested = True
+            else:
+                # 제어 중 A: 추종을 멈추고 ready로 보간 복귀 (도달 후 클러치 추종 재개)
+                self._returning = True
+                self._mapper.disengage_all()
+                logger.info("A 버튼: ready pose 복귀 시작")
         if b and not self._prev_b and self._armed:
             self._disarm("B 버튼")
         self._prev_a = a

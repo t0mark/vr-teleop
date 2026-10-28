@@ -7,9 +7,10 @@
 TELEOP_MODE는 초기 모드일 뿐이다 — 기동 후에는 웹 데스크톱 뷰의 모드 버튼으로 dev↔deploy를
 런타임 전환할 수 있다 (아래 ModeManager).
 
-구성: [모드 무관] 웹소켓 허브 + HTTPS 서버 + IK 계산기(solver·mapper 객체) — 기동 시 1회 조립
+구성: [모드 무관] WebRTC 허브(RtcHub — 시그널링·DataChannel 관리) + HTTPS 서버 +
+                  IK 계산기(solver·mapper 객체) — 기동 시 1회 조립
       [모드 종속] 로봇 백엔드·그리퍼·카메라 + 제어기·상태 방송·포인트클라우드 — ModeManager가 소유,
-                  모드가 바뀌면 통째로 교체된다
+                  모드가 바뀌면 통째로 교체된다 (허브 자체는 클라이언트 접속을 유지한 채 재사용)
 IK는 스스로 돌지 않는다 — RobotController의 30Hz 루프가 매 주기 solver를 호출한다.
 """
 
@@ -18,8 +19,8 @@ import logging
 
 from teleop.ik.pose_to_target import TargetMapper
 from teleop.ik.ik_solver import ArmIkSolver
+from teleop.net.rtc_hub import RtcHub
 from teleop.net.web_server import WebAPIServer
-from teleop.net.websocket import WebSocketHub
 from teleop.pointcloud.pcd_streamer import PointCloudStreamer
 from teleop.robot.robot_controller import RobotController
 from teleop.robot.robot_model import RobotModel
@@ -45,9 +46,9 @@ class ModeManager:
     - 최초 기동이 deploy인데 로봇 연결이 실패하면 SystemExit (폴백 금지, config.TELEOP_MODE 참고)
     """
 
-    def __init__(self, ws_hub, robot_model, solver, mapper):
+    def __init__(self, rtc_hub, robot_model, solver, mapper):
         """solver·mapper: 모드 무관 IK 계산기 — 전환 시 재구성하지 않고 새 제어기에 그대로 넘긴다."""
-        self._hub = ws_hub
+        self._hub = rtc_hub
         self._rm = robot_model
         self._solver = solver
         self._mapper = mapper
@@ -249,14 +250,14 @@ async def run():
     solver = ArmIkSolver(robot_model)
     mapper = TargetMapper(robot_model)
 
-    ws_hub = WebSocketHub()
-    server = WebAPIServer(ws_hub)
+    rtc_hub = RtcHub()
+    server = WebAPIServer(rtc_hub)
 
     # 모드 종속 부품·서비스는 매니저가 소유하고, 웹의 set_mode 요청을 매니저로 잇는다
-    mode_manager = ModeManager(ws_hub, robot_model, solver, mapper)
-    ws_hub.on_set_mode = mode_manager.request_switch
+    mode_manager = ModeManager(rtc_hub, robot_model, solver, mapper)
+    rtc_hub.on_set_mode = mode_manager.request_switch
 
-    ws_hub.start()
+    rtc_hub.start()
     await mode_manager.start(config.TELEOP_MODE)
     await server.start()
 
@@ -266,7 +267,8 @@ async def run():
     finally:
         await server.stop()
         await mode_manager.stop()
-        await ws_hub.stop()
+        await rtc_hub.close_all()
+        await rtc_hub.stop()
 
 
 def main():

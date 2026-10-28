@@ -4,9 +4,12 @@
 관리자는 건드리지 않는다. 로봇을 움직이는 준비(서보 투입, Control Manager 활성화)는 조작자가 제어
 시작을 명시했을 때 prepare_control()에서만 한다.
 
-명령은 JointPosition 스트림이다 (custom-teleop의 Cartesian 임피던스 대신 IK가 낸 관절각을 직접 보냄):
-    body = torso(6) + right_arm(7) + left_arm(7) 각각 JointPositionCommand, head(2) JointPositionCommand,
-    mobility = SE2 속도. 관절 순서는 SDK 구성요소 순서(torso_0.., right_arm_0.., left_arm_0.., head_0..)로
+명령은 관절 임피던스 스트림이다 (custom-teleop의 Cartesian 임피던스 대신 IK가 낸 관절각을 목표로 보냄):
+    body = torso(6) + right_arm(7) + left_arm(7) 각각 JointImpedanceControlCommand,
+    head(2) JointPositionCommand, mobility = SE2 속도.
+    임피던스라 접촉하면 stiffness만큼 밀리고 토크 제한에서 포화된다 (위치 명령은 끝까지 위치를 고집한다).
+    중력 보상은 SDK 제어기가 피드포워드로 더하므로 낮은 stiffness에서도 팔이 처지지 않는다.
+    관절 순서는 SDK 구성요소 순서(torso_0.., right_arm_0.., left_arm_0.., head_0..)로
     이름에서 조립하므로 상위가 주는 사전의 순서에 의존하지 않는다.
 
 상태 콜백은 SDK 내부 스레드에서 호출되므로, 최신 값 한 벌만 락으로 보호해 보관하고
@@ -161,18 +164,26 @@ class Rby1Backend(RobotBackend):
         """
         if self._robot is None:
             return False
-        ok = True
-        for arm in ("left", "right"):
-            try:
-                if not self._robot.set_tool_flange_output_voltage(arm, voltage):
-                    logger.error(f"툴 플랜지 {arm} {voltage}V 공급 실패")
-                    ok = False
-            except Exception as e:
-                logger.error(f"툴 플랜지 {arm} 전압 설정 예외: {e!r}")
-                ok = False
-        if ok:
-            logger.info(f"툴 플랜지 양쪽 {voltage}V 공급 (그리퍼 전원)")
-        return ok
+        # 로봇 전원 투입 직후에는 설정 호출이 True를 돌려줘도 실제 출력이 0V로 남는다 — 상태로 확인하며 재시도
+        deadline = time.monotonic() + config.GRIPPER_POWER_TIMEOUT_S
+        while True:
+            pending = []
+            for arm in ("left", "right"):
+                try:
+                    flange = getattr(self._robot.get_state(), f"tool_flange_{arm}")
+                    if flange.output_voltage == voltage:
+                        continue
+                    self._robot.set_tool_flange_output_voltage(arm, voltage)
+                except Exception as e:
+                    logger.warning(f"툴 플랜지 {arm} 전압 설정 예외: {e!r}")
+                pending.append(arm)
+            if not pending:
+                logger.info(f"툴 플랜지 양쪽 {voltage}V 공급 확인 (그리퍼 전원)")
+                return True
+            if time.monotonic() > deadline:
+                logger.error(f"툴 플랜지 {pending} {voltage}V 공급 실패 (출력 전압 미반영)")
+                return False
+            time.sleep(1.0)
 
     # ── 제어 준비 ────────────────────────────────────────────────────────────
 
@@ -307,9 +318,9 @@ class Rby1Backend(RobotBackend):
         try:
             body = (
                 rby.BodyComponentBasedCommandBuilder()
-                .set_torso_command(self._joint_command(named, _TORSO, min_time, hold_time))
-                .set_right_arm_command(self._joint_command(named, _RIGHT_ARM, min_time, hold_time))
-                .set_left_arm_command(self._joint_command(named, _LEFT_ARM, min_time, hold_time))
+                .set_torso_command(self._impedance_command(named, _TORSO, "torso", min_time, hold_time))
+                .set_right_arm_command(self._impedance_command(named, _RIGHT_ARM, "arm", min_time, hold_time))
+                .set_left_arm_command(self._impedance_command(named, _LEFT_ARM, "arm", min_time, hold_time))
             )
             head = self._joint_command(named, _HEAD, min_time, hold_time)
             linear, angular = mobility
@@ -343,6 +354,27 @@ class Rby1Backend(RobotBackend):
             rby.JointPositionCommandBuilder()
             .set_command_header(rby.CommandHeaderBuilder().set_control_hold_time(hold_time))
             .set_position(np.array([named[j] for j in joints], dtype=np.float64))
+            .set_minimum_time(min_time)
+        )
+        if all(j in self._velocity_limits for j in joints):
+            builder.set_velocity_limit(np.array([self._velocity_limits[j] for j in joints], dtype=np.float64))
+        return builder
+
+    def _impedance_command(self, named: dict, joints: list[str], gain_key: str, min_time: float, hold_time: float):
+        """구성요소 하나의 JointImpedanceControlCommand 빌더를 만들어 반환한다.
+
+        gain_key: config.IMPEDANCE_GAINS의 항목("torso"/"arm") — stiffness·토크 제한·감쇠비를 싣는다.
+        목표·속도 상한 처리는 _joint_command와 같다.
+        """
+        rby = self._rby
+        gains = config.IMPEDANCE_GAINS[gain_key]
+        builder = (
+            rby.JointImpedanceControlCommandBuilder()
+            .set_command_header(rby.CommandHeaderBuilder().set_control_hold_time(hold_time))
+            .set_position(np.array([named[j] for j in joints], dtype=np.float64))
+            .set_stiffness(np.array(gains["stiffness"], dtype=np.float64))
+            .set_torque_limit(np.array(gains["torque_limit"], dtype=np.float64))
+            .set_damping_ratio(gains["damping_ratio"])
             .set_minimum_time(min_time)
         )
         if all(j in self._velocity_limits for j in joints):

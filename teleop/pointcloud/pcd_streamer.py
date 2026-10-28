@@ -1,11 +1,15 @@
 """포인트클라우드 스트리머: 카메라 최신 프레임을 주기적으로 변환·패킹해 전 클라이언트에 방송한다.
 
-데이터 흐름: FrameSource.latest() → PointCloudConverter → pack_pointcloud → WebSocketHub.broadcast_bytes
+데이터 흐름: FrameSource.latest() → PointCloudConverter → pack_pointcloud → RtcHub.broadcast_pcd
 
-패킷 하나 = **그 프레임에서 본 것만**이다. 시간 누적을 하지 않으므로 로봇·머리가 움직여도 잔상이
-남지 않고, 보이는 것이 곧 지금 카메라에 잡힌 표면이다 (대역폭도 누적 방식의 1/5 수준).
-변환(numpy, 약 1 ms)은 executor에서 수행해 asyncio 루프를 막지 않는다.
-같은 프레임(seq 동일)은 다시 보내지 않는다.
+패킷은 WebRTC DataChannel(unordered+unreliable)로 나간다 — 패킷 하나가 **그 프레임에서 본 것만**이라
+늦게 도착한 옛 프레임은 버리는 게 맞는데, TCP류의 순서 보장 전송은 유실된 패킷을 재전송하느라
+최신 데이터까지 지연시키는 head-of-line blocking이 있어 오히려 손해이기 때문이다
+(teleop/net/rtc_hub.py 참고).
+
+시간 누적을 하지 않으므로 로봇·머리가 움직여도 잔상이 남지 않고, 보이는 것이 곧 지금 카메라에
+잡힌 표면이다 (대역폭도 누적 방식의 1/5 수준). 변환(numpy, 약 1 ms)은 executor에서 수행해
+asyncio 루프를 막지 않는다. 같은 프레임(seq 동일)은 다시 보내지 않는다.
 
 카메라 외부 파라미터는 머리·토르소 관절에 딸린 값이라 프레임마다 다시 계산한다. FK는 반드시
 이벤트 루프 쪽(비동기 본체)에서 수행한다 — RobotModel의 pinocchio Data를 다른 서비스와 공유하므로
@@ -35,14 +39,15 @@ def _log_task_exception(task: asyncio.Task):
 class PointCloudStreamer:
     """방송 루프 태스크와 처리 통계를 소유한다."""
 
-    def __init__(self, camera: FrameSource, ws_hub, robot_model, joint_source,
+    def __init__(self, camera: FrameSource, rtc_hub, robot_model, joint_source,
                  rate_hz: float = config.PCD_RATE_HZ):
         """robot_model: 카메라 외부 파라미터(머리 장착 FK) 제공자.
 
+        rtc_hub: RtcHub — 방송 대상(DataChannel) 관리.
         joint_source: 현재 관절값 공급자 (머리가 움직이면 외부 파라미터가 따라 바뀐다).
         """
         self._camera = camera
-        self._hub = ws_hub
+        self._hub = rtc_hub
         self._rm = robot_model
         self._source = joint_source
         self._period = 1.0 / rate_hz
@@ -86,7 +91,7 @@ class PointCloudStreamer:
                 self._converter.set_extrinsics(*self._rm.camera_pose(self._source.joint_positions()))
                 # numpy 처리는 GIL을 놓으므로 executor로 넘겨 루프 지연을 피한다
                 payload = await loop.run_in_executor(None, self._process, frame)
-                await self._hub.broadcast_bytes(payload)
+                self._hub.broadcast_pcd(payload)
                 self._sent += 1
                 self._bytes += len(payload)
 
