@@ -11,7 +11,7 @@ services:
     # 로봇 gRPC(192.168.30.1)·Quest 직결·WebRTC ICE를 단순화하기 위해 호스트 네트워크 사용
     network_mode: host
     volumes:
-      # 저장소 루트 → /workspace (RBY1 URDF·메시는 이미지에 구워져 있어 마운트 불필요)
+      # 저장소 루트 → /workspace (RBY1 URDF·메시는 assets/rby1a로 함께 마운트)
       - ..:/workspace
       # D455 접근: pyrealsense2 wheel은 V4L2 백엔드라 /dev/video*(UVC 노드)가 필요하고,
       # 노드 번호가 재연결 때마다 바뀌므로 /dev 전체를 노출한다 (열 수 있는 장치는 아래 cgroup 규칙으로 제한)

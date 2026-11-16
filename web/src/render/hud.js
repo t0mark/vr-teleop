@@ -268,7 +268,7 @@ export function formatSample(sample, extra = []) {
         }
         lines.push(
             `[${hand}] p(${fmtVec(c.pos)}) trig=${c.trigger.toFixed(2)} ` +
-            `sqz=${c.squeeze.toFixed(2)} stick(${fmtVec(c.thumbstick)})`,
+            `sqz=${c.squeeze.toFixed(2)}`,
         );
     }
     return lines;

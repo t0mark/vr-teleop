@@ -6,7 +6,7 @@
 
 명령은 관절 임피던스 스트림이다 (custom-teleop의 Cartesian 임피던스 대신 IK가 낸 관절각을 목표로 보냄):
     body = torso(6) + right_arm(7) + left_arm(7) 각각 JointImpedanceControlCommand,
-    head(2) JointPositionCommand, mobility = SE2 속도.
+    head(2) JointPositionCommand.
     임피던스라 접촉하면 stiffness만큼 밀리고 토크 제한에서 포화된다 (위치 명령은 끝까지 위치를 고집한다).
     중력 보상은 SDK 제어기가 피드포워드로 더하므로 낮은 stiffness에서도 팔이 처지지 않는다.
     관절 순서는 SDK 구성요소 순서(torso_0.., right_arm_0.., left_arm_0.., head_0..)로
@@ -305,8 +305,8 @@ class Rby1Backend(RobotBackend):
             self._stream = None
             return False
 
-    def send_targets(self, named: dict[str, float], mobility: tuple[float, float], dt: float) -> bool:
-        """한 주기의 관절 목표·주행 속도를 스트림으로 보낸다. 반환: 성공 여부.
+    def send_targets(self, named: dict[str, float], dt: float) -> bool:
+        """한 주기의 관절 목표를 스트림으로 보낸다. 반환: 성공 여부.
 
         실패(예외·스트림 종료)면 스트림을 닫고 False를 돌려준다 — 상위가 제어 해제로 처리한다.
         """
@@ -323,18 +323,10 @@ class Rby1Backend(RobotBackend):
                 .set_left_arm_command(self._impedance_command(named, _LEFT_ARM, "arm", min_time, hold_time))
             )
             head = self._joint_command(named, _HEAD, min_time, hold_time)
-            linear, angular = mobility
-            mobility_cmd = (
-                rby.SE2VelocityCommandBuilder()
-                .set_command_header(rby.CommandHeaderBuilder().set_control_hold_time(hold_time))
-                .set_velocity(np.array([linear, 0.0]), angular)
-                .set_minimum_time(min_time)
-            )
             command = rby.RobotCommandBuilder().set_command(
                 rby.ComponentBasedCommandBuilder()
                 .set_body_command(body)
                 .set_head_command(head)
-                .set_mobility_command(mobility_cmd)
             )
             self._stream.send_command(command, config.CONTROL_SEND_TIMEOUT_MS)
             return True

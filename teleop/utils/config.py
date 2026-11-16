@@ -154,16 +154,6 @@ CONTROL_BODY_VEL_FRACTION = 0.15
 # 오른손 B 버튼(xr-standard 게임패드 인덱스 5) → 제어 해제
 GAMEPAD_BUTTON_B = 5
 
-# 모바일 베이스: 오른손 스틱. 전진 밀기(axes[3] < 0)가 +x, 왼쪽 밀기(axes[2] < 0)가 +yaw(CCW).
-# 실기기에서 방향이 반대면 MOBILE_LINEAR_SIGN·MOBILE_ANGULAR_SIGN으로 뒤집는다
-MOBILE_LINEAR_MAX = 0.3
-MOBILE_ANGULAR_MAX = 0.5
-MOBILE_LINEAR_SIGN = 1.0
-MOBILE_ANGULAR_SIGN = 1.0
-MOBILE_STICK_DEADZONE = 0.15
-# 스틱 → 속도 1차 필터 시간 상수(초): 급출발·급정지 완화
-MOBILE_SMOOTHING_TAU = 0.3
-
 # 그리퍼: 별도 Dynamixel 버스(UPC 규약 장치명), 모터 ID = 0(오른쪽)·1(왼쪽).
 # 양쪽 모두 엔코더 증가 방향이 닫힘이라 열림 정도를 뒤집어 보낸다 (실측: 반전 없으면 열림 1.0이 닫힘 끝으로 감)
 GRIPPER_DEVICE = "/dev/rby1_gripper"

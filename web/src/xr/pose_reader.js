@@ -1,5 +1,5 @@
 // WebXR 프레임에서 포즈·입력을 수집한다: body-tracking 조인트(어깨·팔꿈치 등),
-// 컨트롤러 손목(grip) 포즈, 트리거·그립·스틱 입력.
+// 컨트롤러 손목(grip) 포즈, 트리거·그립 입력.
 // 좌표계: WebXR reference space(오른손, y-up), 단위 m. 쿼터니언은 (x, y, z, w).
 
 // 손가락 조인트(손마다 20여 개)만 제외하고 나머지 전신 조인트를 보낸다.
@@ -64,8 +64,8 @@ export class PoseReader {
 
     /**
      * 컨트롤러 손목 포즈(gripSpace)와 버튼·축 입력을 읽는다.
-     * 반환: { left, right } — 각 항목 { pos, quat, trigger, squeeze, thumbstick } 또는 null.
-     * 버튼 인덱스는 xr-standard 게임패드 매핑(0=trigger, 1=squeeze, 축 2·3=thumbstick).
+     * 반환: { left, right } — 각 항목 { pos, quat, trigger, squeeze, buttons } 또는 null.
+     * 버튼 인덱스는 xr-standard 게임패드 매핑(0=trigger, 1=squeeze).
      */
     _readControllers(frame, refSpace, session) {
         const hands = { left: null, right: null };
@@ -82,7 +82,6 @@ export class PoseReader {
                 quat: [q.x, q.y, q.z, q.w],
                 trigger: gp ? gp.buttons[0]?.value ?? 0 : 0,
                 squeeze: gp ? gp.buttons[1]?.value ?? 0 : 0,
-                thumbstick: gp ? [gp.axes[2] ?? 0, gp.axes[3] ?? 0] : [0, 0],
                 buttons: gp ? gp.buttons.map((b) => (b.pressed ? 1 : 0)) : [],
             };
         }

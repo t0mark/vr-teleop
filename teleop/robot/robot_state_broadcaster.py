@@ -12,7 +12,6 @@
 
 import asyncio
 import logging
-import math
 import time
 
 from teleop.robot.robot_interface import JointSource
@@ -116,12 +115,6 @@ class RobotStateBroadcaster:
         # 제어 상태(대기/제어 중): HUD가 "왜 안 따라오는지"를 보여 주는 핵심 표시
         if self._control_source is not None:
             state["armed"] = bool(self._control_source.armed)
-        # 주행으로 누적된 베이스 포즈 (시뮬 백엔드만 제공, WebXR 기저로 변환해 실음)
-        base = self._source.base_pose() if hasattr(self._source, "base_pose") else None
-        if base is not None:
-            x, y, yaw = base
-            p, r = robot_to_webxr([x, y, 0.0], [0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2)])
-            state["base"] = {"pos": p.tolist(), "quat": r.tolist()}
         return state
 
     def _log_stats(self):

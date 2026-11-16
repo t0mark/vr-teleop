@@ -150,7 +150,6 @@ export class RobotView {
 
     /**
      * robot_state 메시지(WebXR 좌표 링크 포즈)로 전 링크 자세를 갱신한다. 반환값 없음.
-     * base(주행 누적 포즈, 시뮬 백엔드만 제공)가 있으면 로봇 루트를 통째로 옮긴다.
      */
     applyState(state) {
         for (const [name, pose] of Object.entries(state.links)) {
@@ -160,16 +159,6 @@ export class RobotView {
             // WebXR 오른손 → 표시(왼손): z 거울 켤레
             node.position.set(p[0], p[1], -p[2]);
             node.rotationQuaternion.set(-q[0], -q[1], q[2], q[3]);
-        }
-
-        // 주행 시각화: 링크 포즈는 base 프레임이므로 루트 이동으로 전체가 따라간다
-        if (state.base && this._root !== null) {
-            const p = state.base.pos, q = state.base.quat;
-            this._root.position.set(ROBOT_OFFSET.x + p[0], ROBOT_OFFSET.y + p[1], ROBOT_OFFSET.z - p[2]);
-            if (this._root.rotationQuaternion === null) {
-                this._root.rotationQuaternion = BABYLON.Quaternion.Identity();
-            }
-            this._root.rotationQuaternion.set(-q[0], -q[1], q[2], q[3]);
         }
     }
 }

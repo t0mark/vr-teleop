@@ -3,7 +3,7 @@
 데이터 흐름 (30 Hz, 이 루프가 IK 호출까지 소유한다 — IK는 계산기(ik_solver·pose_to_target)일 뿐
 스스로 돌지 않는다):
     포즈 샘플 → TargetMapper(클러치 델타) → ArmIkSolver.solve(양팔 관절각)
-        + ready 보간(토르소·머리) + 스틱(주행) → 안전 검사 → RobotBackend.send_targets()
+        + ready 보간(토르소·머리) → 안전 검사 → RobotBackend.send_targets()
     트리거 → 그리퍼 열림 정도 → GripperBackend.set_openness()
 
 제어 상태는 두 가지뿐이다.
@@ -30,7 +30,7 @@ import numpy as np
 
 from teleop.robot.robot_interface import GripperBackend, RobotBackend
 from teleop.utils import config
-from teleop.utils.inputs import hand_button, hand_thumbstick, hand_trigger
+from teleop.utils.inputs import hand_button, hand_trigger
 
 logger = logging.getLogger("robot_controller")
 
@@ -46,7 +46,7 @@ def _log_task_exception(task: asyncio.Task):
 
 
 class RobotController:
-    """제어 상태(대기/제어), IK 상태(_last_q), 마지막 명령, 주행 속도 필터를 소유한다."""
+    """제어 상태(대기/제어), IK 상태(_last_q), 마지막 명령을 소유한다."""
 
     def __init__(self, rtc_hub, robot_model, solver, mapper, robot: RobotBackend,
                  gripper: GripperBackend | None = None, rate_hz: float = config.CONTROL_RATE_HZ):
@@ -79,7 +79,6 @@ class RobotController:
             **{j: urdf[j] * config.CONTROL_BODY_VEL_FRACTION for j in _TORSO_HEAD},
         }
         robot.set_velocity_limits(self._vel)
-        self._mobility = np.zeros(2)
         self._clamped = 0
         self._sent = 0
         self._solve_ms_acc = 0.0
@@ -234,7 +233,6 @@ class RobotController:
             return False
         # 첫 명령은 측정 자세 그대로 — 모든 변화는 여기서부터 속도 제한 안에서 시작된다
         self._last_cmd = {j: measured[j] for j in _TORSO_HEAD + _ARMS}
-        self._mobility[:] = 0.0
         self._clamped = 0
         self._armed = True
         logger.info("제어 시작: ready pose로 이동 후 클러치 추종")
@@ -265,10 +263,9 @@ class RobotController:
         await self._update_arm_targets(loop, sample, dt)
         target = self._compose_target()
         cmd = self._clamp_step(target, dt)
-        mobility = self._update_mobility(sample, dt)
 
         # 전송은 블로킹(gRPC)이라 executor에서
-        ok = await loop.run_in_executor(None, self._robot.send_targets, cmd, tuple(mobility), self._period)
+        ok = await loop.run_in_executor(None, self._robot.send_targets, cmd, self._period)
         if not ok:
             self._disarm("전송 실패")
             return
@@ -305,23 +302,6 @@ class RobotController:
             self._clamped += 1
         return cmd
 
-    def _update_mobility(self, sample: dict | None, dt: float) -> np.ndarray:
-        """오른손 스틱을 주행 속도 (전진 m/s, yaw rad/s)로 바꿔 1차 필터를 거친 값을 반환한다.
-
-        입력이 없으면 목표 0 (필터 때문에 부드럽게 멈춘다). 데드존 안은 0.
-        """
-        sx, sy = hand_thumbstick(sample, "right")
-        sx = 0.0 if abs(sx) < config.MOBILE_STICK_DEADZONE else sx
-        sy = 0.0 if abs(sy) < config.MOBILE_STICK_DEADZONE else sy
-        # 게임패드 규약: 앞으로 밀기 = -y, 오른쪽 = +x → 전진 +x, 왼쪽 밀기 = +yaw(CCW)
-        goal = np.array([
-            -sy * config.MOBILE_LINEAR_MAX * config.MOBILE_LINEAR_SIGN,
-            -sx * config.MOBILE_ANGULAR_MAX * config.MOBILE_ANGULAR_SIGN,
-        ])
-        alpha = min(1.0, dt / config.MOBILE_SMOOTHING_TAU)
-        self._mobility += alpha * (goal - self._mobility)
-        return self._mobility
-
     # ── 통계·진단 ────────────────────────────────────────────────────────────
 
     def _log_stats(self, sample: dict | None):
@@ -336,8 +316,7 @@ class RobotController:
                 if self._solve_count > 0 else ""
             )
             logger.info(
-                f"제어 중: 전송 {self._sent / dt:.1f} Hz, 팔 속도 클램프 {self._clamped}회, "
-                f"주행 v={self._mobility[0]:.2f} w={self._mobility[1]:.2f}{solve_info}"
+                f"제어 중: 전송 {self._sent / dt:.1f} Hz, 팔 속도 클램프 {self._clamped}회{solve_info}"
             )
             self._log_diagnostics(sample)
         else:

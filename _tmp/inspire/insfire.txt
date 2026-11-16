@@ -1,0 +1,231 @@
+    G1- Flagship Version C
+    End INSPIRE Dexterous Hand
+     Disassembly and Assembly Guide Manual V1.0
+
+
+
+
+        After installing the dexterous hand, avoid movements such as squatting and lying down to prevent damage.
+
+This product is a civilian robot. We kindly request that all users refrain from making any dangerous modifications or using the
+
+                                                robot in a hazardous manner.
+
+    Please visit Unitree Robotics Website for more related terms and policies, and comply with local laws and regulations.
+Disassembly Instructions ......................................................................................................................... 2
+
+         Step1: Remove the Cover Plate.................................................................................................... 2
+
+         Step2: Remove the INSPIRE Dexterous Hand .......................................................................... 2
+
+         Step3: Remove the cable clips ..................................................................................................... 3
+
+         Step4: Disconnect the Connector ................................................................................................. 3
+
+Installation Instructions ............................................................................................................................ 4
+
+         Step1: Install the Fixed Base, Signal Cable Circuit Board, and Fixed Cover ........................ 4
+
+         Step2: Install the INSPIRE Dexterous Hand .............................................................................. 4
+
+         Step3: Install the cover plate ........................................................................................................ 5
+
+         Step4: Install Cable Clamps ......................................................................................................... 6
+
+         Step5: Connect the Connector ...................................................................................................... 6
+
+         Step6: Complete the installation .................................................................................................. 7
+Disassembly Instructions
+
+Step1: Remove the Cover Plate
+    Remove two M2 screws from the hand section, then extract the cover plate as shown in the figure below.
+
+
+
+
+                                                                                                  M2 Screws*2
+
+                                                                                                 Cover Plate
+
+
+
+
+Step2: Remove the INSPIRE Dexterous Hand
+    Remove two M3 screws, take out the clamp (mind the cables), and then remove the INSPIRE dexterous
+hand, as shown below.
+
+
+
+
+                                                                                                 Clamp
+
+
+
+                                                                                               Dexterous Hand
+
+                                                                                              M3 Screws*2
+
+
+
+
+                                                             © 2025   All rights reserved, Unitree Robotics    2
+                                                                                         G1 - Flagship Version C
+                                                                                   End INSPIRE Dexterous Hand
+                                                                        Disassembly and Assembly Guide Manual
+
+Step3: Remove the cable clips
+    Remove one M4 screw and take out Cable Clamp 1. Remove two M4 screws and take out Cable Clamp
+2. Remove two M4 screws and take out Cable Clamp 3. Remove two M4 screws and take out Cable Clamp 4,
+as shown below.
+
+
+
+
+                                                                              Cable Clip 4
+
+
+                                                                              Cable Clip 3
+
+
+                                                                              Cable Clip 2
+                                                                              Cable Clip 1
+
+
+
+
+Step4: Disconnect the Connector
+    Unplug the connector, as shown below.
+
+
+
+
+                                                                                      Power Line
+                                                                                      Signal Line
+
+
+
+
+                                                          © 2025   All rights reserved, Unitree Robotics    3
+ Installation Instructions
+
+Step1: Install the Fixed Base, Signal Cable Circuit Board, and Fixed Cover
+     Remove two M6 screws, take out the handle, place the fixed base, reinstall the handle, and tighten the
+two M6 screws.Place the signal cable circuit board, install the fixed cover, and tighten two M4 screws.
+
+
+
+
+                                                                           Signal Cable Circuit Board
+                                                                           Fixed Cover
+                                                                           M4 Screws*2
+                                                                           Fixed Base
+                                                                           Handle
+                                                                           M6 Screws*2
+
+
+
+
+Step2: Install the INSPIRE Dexterous Hand
+     Before installing the hand, distinguish between left and right hands (method as shown).
+
+
+
+
+                    Right Hand                                               Left Hand
+
+                                                               © 2025   All rights reserved, Unitree Robotics   4
+                                                                                             G1 - Flagship Version C
+                                                                                       End INSPIRE Dexterous Hand
+                                                                            Disassembly and Assembly Guide Manual
+    Place the dexterous hand, install the clamp (mind the cables), and tighten two M3 screws.
+
+
+
+
+                                         Clamp
+
+
+
+
+                                          Dexterous Hand
+
+                                          M3 Screws*2
+
+
+
+
+Step3: Install the cover plate
+    Place the cover plate, protect the cables, and tighten two M2 screws, as shown below.
+
+
+
+
+                                         M2 Screws*2
+
+                                         Cover Plate
+
+
+
+
+                                                              © 2025   All rights reserved, Unitree Robotics    5
+Step4: Install Cable Clamps
+     Place Cable Clamp 1 and tighten one M4 screw. Place Cable Clamp 2 and tighten two M4 screws. Place
+Cable Clamp 3 and tighten two M4 screws. Place Cable Clamp 4 and tighten two M4 screws, as shown below.
+     Note: There are four bolded sections on the cable. These correspond to Cable Clamps 1-4. Ensure the
+bolded sections are securely clamped to fix the cables properly!
+
+
+
+
+                                                                                 Cable Clip 4
+
+
+                                                                                  Cable Clip 3
+
+
+                                                                                 Cable Clip 2
+                                                                                 Cable Clip 1
+
+
+
+
+Step5: Connect the Connector
+     Plug in the connector firmly, as shown below.
+
+
+
+
+                                                                                             Power Line
+
+
+
+
+                                                               © 2025   All rights reserved, Unitree Robotics   6
+                                                                                              G1 - Flagship Version C
+                                                                                        End INSPIRE Dexterous Hand
+                                                                             Disassembly and Assembly Guide Manual
+
+
+
+
+        Signal Line
+
+
+
+
+Step6: Complete the installation
+
+
+
+
+      ⚫ Attention!!! When installing the three-fingered dexterous hand, please do not press the cable to avoid
+      damaging the cable and causing poor contact!
+
+      ⚫ Attention!!! After installing the dexterous hand, avoid movements such as squatting and lying down to
+      prevent damage!!!
+
+
+
+
+                                                               © 2025   All rights reserved, Unitree Robotics    7
+

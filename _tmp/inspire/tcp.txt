@@ -1,0 +1,15 @@
+Please connect with robot hand and computer via network
+cable.
+
+
+
+
+Then please set up the Ethernet.
+Change the IPV4 to 192.168.11.222
+
+
+
+
+Then choose “search” the Ethernet connection in software
+interface
+

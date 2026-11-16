@@ -50,7 +50,7 @@ cd docker && docker compose stop
 ### 4. 조작
 
 - 오른손 **A** = 제어 시작 (ready pose 이동 후 추종), 제어 중에 누르면 ready pose로 복귀 / 오른손 **B** = 제어 해제
-- **grip**을 쥔 동안 손 델타 추종 / **트리거** = 그리퍼 개폐 / 오른손 **스틱** = 모바일 베이스
+- **grip**을 쥔 동안 손 델타 추종 / **트리거** = 그리퍼 개폐
 - dev 모드에서 VR 없이: 웹 수동 조작 패널 또는 합성 시나리오
   ```bash
   docker exec airlab_hw_teleop bash -c 'cd /workspace && python tools/fake_vr_quest3.py --cycles 1'

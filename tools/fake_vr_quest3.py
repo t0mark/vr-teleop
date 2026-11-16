@@ -1,6 +1,6 @@
 """Quest 대체 합성 포즈 송신기 (dev 모드용): 서버와 WebRTC로 협상해 가짜 업링크 샘플을 보낸다.
 
-실기기 없이 조작 시나리오 전체를 재현해 IK·제어·그리퍼·모바일 베이스 경로를 자극한다.
+실기기 없이 조작 시나리오 전체를 재현해 IK·제어·그리퍼 경로를 자극한다.
 샘플 형식은 web/src/xr/pose_reader.js의 실제 업링크와 동일하다 (WebXR 좌표: x=우, y=상, -z=전방, m).
 시그널링(HTTP POST /rtc/offer)·state 채널 송신은 web/src/net/rtc_link.js와 같은 방식이다.
 
@@ -10,9 +10,8 @@
      2-8   ready 복귀 대기
      8-18  grip 쥐고 양손 원운동 (클러치 추종)
     12-16  트리거 삼각 램프 0→1→0 (그리퍼 개폐)
-    18-21  오른손 스틱: 전진 → 좌회전 (모바일 베이스)
-    21     오른손 B 상승 에지 → 제어 해제
-    21-24  대기
+    18     오른손 B 상승 에지 → 제어 해제
+    18-21  대기
 
 사용법 (컨테이너 내부, 서버 기동 후):
     python tools/fake_quest.py [--host localhost] [--rate 50] [--cycles 1]
@@ -46,9 +45,8 @@ _PHASES = [
     ("press_A", 2.0, 2.4),
     ("wait_ready", 2.4, 8.0),
     ("clutch_motion", 8.0, 18.0),
-    ("mobile_stick", 18.0, 21.0),
-    ("press_B", 21.0, 21.4),
-    ("idle_end", 21.4, 24.0),
+    ("press_B", 18.0, 18.4),
+    ("idle_end", 18.4, 21.0),
 ]
 _CYCLE_S = _PHASES[-1][2]
 
@@ -106,7 +104,6 @@ class FakeQuest:
             pos = self._hand_pos(side, t_cycle, phase)
             engaged = phase == "clutch_motion"
             trigger = _triangle(t_cycle, 12.0, 16.0) if engaged else 0.0
-            stick = self._stick(t_cycle) if side == "right" else (0.0, 0.0)
             a = 1 if (side == "right" and phase == "press_A") else 0
             b = 1 if (side == "right" and phase == "press_B") else 0
             hands[side] = {
@@ -114,7 +111,6 @@ class FakeQuest:
                 "quat": [0.0, 0.0, 0.0, 1.0],
                 "trigger": trigger,
                 "squeeze": 1.0 if engaged else 0.0,
-                "thumbstick": list(stick),
                 # xr-standard 버튼 순서: 0=trigger, 1=squeeze, 4=A/X, 5=B/Y
                 "buttons": [1 if trigger > 0.5 else 0, 1 if engaged else 0, 0, 0, a, b],
             }
@@ -133,17 +129,6 @@ class FakeQuest:
         theta = _CIRCLE_OMEGA * (t - 8.0) + (math.pi if side == "left" else 0.0)
         cx, cy, cz = _CIRCLE_CENTER[side]
         return (cx + _CIRCLE_RADIUS * math.cos(theta), cy + _CIRCLE_RADIUS * math.sin(theta), cz)
-
-    def _stick(self, t: float) -> tuple[float, float]:
-        """모바일 구간의 오른손 스틱 값을 반환한다 (전진 1.5초 → 좌회전 1.5초, 그 외 0).
-
-        게임패드 규약: 앞으로 밀기 = -y, 왼쪽 = -x.
-        """
-        if 18.0 <= t < 19.5:
-            return (0.0, -0.8)
-        if 19.5 <= t < 21.0:
-            return (-0.8, 0.0)
-        return (0.0, 0.0)
 
     def _body_joints(self, hands: dict) -> dict:
         """어깨·팔꿈치 등 body-tracking 조인트를 손 위치와 정합되게 합성해 반환한다.

@@ -7,7 +7,7 @@
 제어 경로는 세 단계로 나뉜다.
     prepare_control()  전원·서보·Control Manager를 명령 수신 가능 상태로 만든다 (1회, 블로킹)
     start_stream()     연속 명령 스트림을 연다 (제어 시작마다)
-    send_targets()     목표 관절각·주행 속도를 한 주기 보낸다 (30 Hz)
+    send_targets()     목표 관절각을 한 주기 보낸다 (30 Hz)
     stop_stream()      스트림을 닫는다 — 로봇은 서보가 잡은 채 현재 자세를 유지한다
 """
 
@@ -54,10 +54,10 @@ class RobotBackend(JointSource):
         """연속 명령 스트림을 연다. 반환: 성공 여부 (블로킹, 제어 준비 대기 포함)."""
 
     @abstractmethod
-    def send_targets(self, named: dict[str, float], mobility: tuple[float, float], dt: float) -> bool:
+    def send_targets(self, named: dict[str, float], dt: float) -> bool:
         """한 주기의 목표를 보낸다. 반환: 성공 여부 (실패면 스트림이 이미 닫힌 상태).
 
-        named: 몸통 관절(torso·양팔·머리) 목표 {관절명: rad}. mobility: (전진 속도 m/s, yaw 속도 rad/s).
+        named: 몸통 관절(torso·양팔·머리) 목표 {관절명: rad}.
         dt: 명령 주기(초) — minimum_time·hold_time 계산에 쓴다.
         """
 
@@ -69,14 +69,6 @@ class RobotBackend(JointSource):
     @abstractmethod
     def streaming(self) -> bool:
         """명령 스트림이 열려 있으면 True."""
-
-    def base_pose(self) -> tuple[float, float, float] | None:
-        """주행으로 누적된 베이스 포즈 (x m, y m, yaw rad)를 반환한다. 미지원이면 None (기본 구현).
-
-        시뮬 백엔드가 주행 시각화를 위해 구현한다. 실로봇은 오도메트리 연동 전까지 None —
-        None이면 시각화가 베이스를 원점에 둔다.
-        """
-        return None
 
 
 class GripperBackend(ABC):

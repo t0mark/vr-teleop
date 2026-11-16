@@ -14,8 +14,6 @@ const SEND_INTERVAL_MS = 33;
 // 사람 기하 (WebXR: x=우, y=상, -z=전방, m) — fake_vr_quest3.py와 동일한 값
 const SHOULDER_Y = 1.4;
 const HAND_REST = { right: [0.3, 1.0, -0.25], left: [-0.3, 1.0, -0.25] };
-// 주행 홀드 버튼이 만드는 스틱 값 (게임패드 규약: 앞으로 밀기 = -y, 왼쪽 = -x)
-const STICK_HOLD = 0.8;
 // 키보드 홀드 이동 속도: 손 오프셋(m/s), 트리거 램프(1/s)
 const KEY_MOVE_RATE = 0.15;
 const KEY_TRIGGER_RATE = 2.5;
@@ -26,11 +24,6 @@ const MOVE_KEYS = {
     KeyW: [2, +1], KeyS: [2, -1],   // 앞/뒤
     KeyA: [0, -1], KeyD: [0, +1],   // 좌/우
     KeyR: [1, +1], KeyF: [1, -1],   // 위/아래
-};
-// 방향키 → 스틱 값
-const ARROW_KEYS = {
-    ArrowUp: [0, -STICK_HOLD], ArrowDown: [0, STICK_HOLD],
-    ArrowLeft: [-STICK_HOLD, 0], ArrowRight: [STICK_HOLD, 0],
 };
 
 export class ManualControl {
@@ -48,15 +41,13 @@ export class ManualControl {
             offset: { right: [0, 0, 0], left: [0, 0, 0] },
             a: false,
             b: false,
-            stick: [0, 0],
         };
         this._link = null;
         this._timer = null;
         this._devMode = false;
-        // 키보드 홀드 상태: 이동 {code: side}, 트리거 {side}, 방향키 {code}
+        // 키보드 홀드 상태: 이동 {code: side}, 트리거 {side}
         this._heldMoves = new Map();
         this._heldTriggers = new Set();
-        this._heldArrows = new Set();
         // 버튼 래치: 순간 클릭이 송신 틱(33ms) 사이에 끼어 눌린 샘플이 0개가 되는 것 방지 —
         // 누르는 순간부터 최소 이 횟수만큼은 눌린 상태로 송신을 보장한다 (서버 에지 감지용)
         this._pressHold = { a: 0, b: 0 };
@@ -131,11 +122,6 @@ export class ManualControl {
         if (pressed) this._pressHold[name] = 6;
     }
 
-    /** 오른손 스틱 값을 설정한다 (주행: 앞으로 밀기 = -y). 반환값 없음. */
-    setStick(x, y) {
-        this._state.stick = [x, y];
-    }
-
     // ── 샘플 생성 (PoseReader.read()와 동일 형식) ───────────────────────────
 
     /**
@@ -160,7 +146,6 @@ export class ManualControl {
                 quat: [0, 0, 0, 1],
                 trigger,
                 squeeze: grip ? 1 : 0,
-                thumbstick: side === "right" ? [...this._state.stick] : [0, 0],
                 // xr-standard 버튼 순서: 0=trigger, 1=squeeze, 4=A/X, 5=B/Y
                 buttons: [
                     trigger > 0.5 ? 1 : 0, grip ? 1 : 0, 0, 0,
@@ -222,7 +207,7 @@ export class ManualControl {
             }
         }
 
-        // A/B·주행은 누르는 동안만 활성 (momentary) — 마우스가 벗어나도 풀리게 pointerleave까지 처리
+        // A/B는 누르는 동안만 활성 (momentary) — 마우스가 벗어나도 풀리게 pointerleave까지 처리
         const hold = (id, down, up) => {
             const el = document.getElementById(id);
             el.addEventListener("pointerdown", down);
@@ -231,10 +216,6 @@ export class ManualControl {
         };
         hold("mpBtnA", () => this.setButton("a", true), () => this.setButton("a", false));
         hold("mpBtnB", () => this.setButton("b", true), () => this.setButton("b", false));
-        hold("mpFwd", () => this.setStick(0, -STICK_HOLD), () => this.setStick(0, 0));
-        hold("mpBack", () => this.setStick(0, STICK_HOLD), () => this.setStick(0, 0));
-        hold("mpTurnL", () => this.setStick(-STICK_HOLD, 0), () => this.setStick(0, 0));
-        hold("mpTurnR", () => this.setStick(STICK_HOLD, 0), () => this.setStick(0, 0));
     }
 
     // ── 키보드 조작 ─────────────────────────────────────────────────────────
@@ -243,7 +224,7 @@ export class ManualControl {
      * 키보드 바인딩을 등록한다. 반환값 없음.
      *
      * 배치: W/S 앞뒤, A/D 좌우, R/F 위아래 (홀드 이동, Shift=왼손) / G grip 토글 (Shift+G 왼손) /
-     *       T 트리거 홀드 (Shift+T 왼손) / Enter=A, Backspace=B (누르는 동안) / 방향키 주행 / M 활성 토글.
+     *       T 트리거 홀드 (Shift+T 왼손) / Enter=A, Backspace=B (누르는 동안) / M 활성 토글.
      * 입력 요소에 포커스가 있으면 무시한다 (슬라이더 조작과 충돌 방지).
      */
     _bindKeyboard() {
@@ -259,9 +240,6 @@ export class ManualControl {
 
             if (e.code in MOVE_KEYS) {
                 this._heldMoves.set(e.code, side);
-            } else if (e.code in ARROW_KEYS) {
-                this._heldArrows.add(e.code);
-                e.preventDefault();
             } else if (e.code === "KeyT") {
                 this._heldTriggers.add(side);
             } else if (e.code === "KeyG" && !e.repeat) {
@@ -275,7 +253,6 @@ export class ManualControl {
         });
         window.addEventListener("keyup", (e) => {
             this._heldMoves.delete(e.code);
-            this._heldArrows.delete(e.code);
             if (e.code === "KeyT") {
                 // Shift를 먼저 놓는 경우를 위해 양쪽 다 해제
                 this._heldTriggers.delete("left");
@@ -306,20 +283,6 @@ export class ManualControl {
                 const step = KEY_TRIGGER_RATE * dt;
                 this.setTrigger(side, cur + Math.min(step, Math.abs(goal - cur)) * Math.sign(goal - cur));
             }
-        }
-
-        // 주행: 방향키 합성 (동시 홀드 허용). 방향키를 안 쓰는 동안은 패널 버튼 값을 건드리지 않는다
-        if (this._heldArrows.size > 0) {
-            let x = 0, y = 0;
-            for (const code of this._heldArrows) {
-                x += ARROW_KEYS[code][0];
-                y += ARROW_KEYS[code][1];
-            }
-            this.setStick(Math.max(-1, Math.min(1, x)), Math.max(-1, Math.min(1, y)));
-            this._arrowsActive = true;
-        } else if (this._arrowsActive) {
-            this._arrowsActive = false;
-            this.setStick(0, 0);
         }
     }
 }

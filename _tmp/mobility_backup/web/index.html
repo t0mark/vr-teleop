@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RBY1 Web Teleop</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0d0f14;
+            color: #d8dee9;
+            font-family: monospace;
+        }
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            z-index: 10;
+        }
+        #status {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+        }
+        /* display: block이 hidden 속성(UA의 display: none)을 덮어쓰지 않게 명시적으로 복원 */
+        #ui button[hidden] {
+            display: none;
+        }
+        #ui button {
+            font-size: 13px;
+            padding: 8px 18px;
+            display: block;
+            color: #e8ecf1;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 8px;
+            cursor: pointer;
+            background: rgba(30, 34, 44, 0.85);
+            margin-top: 8px;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        #ui button:hover {
+            border-color: rgba(255, 255, 255, 0.45);
+        }
+        #enterVrBtn {
+            font-size: 17px;
+            background: #2e7d32;
+            border-color: #2e7d32;
+        }
+        #enterVrBtn:active {
+            background: #1b5e20;
+        }
+        /* 모드 전환 버튼: 전환 대상이 deploy(실로봇 연결)면 경고색 */
+        #modeBtn.to-deploy {
+            border-color: #e65100;
+            color: #ffb27a;
+        }
+        #modeBtn:disabled {
+            opacity: 0.45;
+            cursor: wait;
+        }
+        /* 수동 조작 패널 (dev 모드 데스크톱 전용): VR 대신 같은 업링크 샘플을 만드는 입력 UI */
+        #manualPanel {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            z-index: 10;
+            width: 230px;
+            font-size: 12px;
+            color: #d8dee9;
+            background: rgba(14, 17, 24, 0.88);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 10px;
+            padding: 10px 12px;
+        }
+        #manualPanel .mp-title {
+            font-weight: bold;
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+        #manualPanel fieldset {
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            margin: 6px 0;
+            padding: 6px 8px;
+        }
+        #manualPanel fieldset:disabled {
+            opacity: 0.4;
+        }
+        #manualPanel legend {
+            padding: 0 4px;
+            color: #9fc4e8;
+        }
+        #manualPanel label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 2px 0;
+        }
+        #manualPanel label span {
+            width: 48px;
+            flex-shrink: 0;
+        }
+        #manualPanel input[type="range"] {
+            flex: 1;
+            min-width: 0;
+        }
+        #manualPanel .mp-row {
+            display: flex;
+            gap: 6px;
+            margin-top: 6px;
+        }
+        #manualPanel .mp-row button {
+            flex: 1;
+            font-size: 12px;
+            padding: 6px 4px;
+            margin-top: 0;
+            display: inline-block;
+        }
+        #manualPanel .mp-hold:active {
+            background: #29435e;
+        }
+        #manualPanel .mp-keys {
+            margin-top: 8px;
+            font-size: 11px;
+            line-height: 1.6;
+            color: #8a93a5;
+        }
+        #manualPanel .mp-keys b {
+            color: #c9d4e3;
+        }
+        #hudOverlay {
+            position: absolute;
+            bottom: 12px;
+            left: 12px;
+            z-index: 10;
+            margin: 0;
+            font-size: 12px;
+            color: #9fe8a0;
+            background: rgba(10, 12, 18, 0.72);
+            padding: 8px 10px;
+            border-radius: 6px;
+            max-height: 45vh;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="renderCanvas"></canvas>
+    <div id="ui">
+        <p id="status">초기화 중...</p>
+        <button id="enterVrBtn" hidden>Enter VR</button>
+        <button id="modeBtn" hidden></button>
+    </div>
+
+    <!-- 수동 조작 (dev 모드 데스크톱 전용): VR 컨트롤러와 동일한 업링크 샘플을 만들어 보낸다 -->
+    <div id="manualPanel" hidden>
+        <label class="mp-title"><input type="checkbox" id="mpEnable" /> 수동 조작</label>
+        <fieldset id="mpControls" disabled>
+            <legend>오른손</legend>
+            <label><span>grip</span><input type="checkbox" id="mpGrip-right" /> 클러치</label>
+            <label><span>트리거</span><input type="range" id="mpTrig-right" min="0" max="1" step="0.01" value="0" /></label>
+            <label><span>옆(x)</span><input type="range" id="mpX-right" min="-0.3" max="0.3" step="0.005" value="0" /></label>
+            <label><span>높이(y)</span><input type="range" id="mpY-right" min="-0.3" max="0.3" step="0.005" value="0" /></label>
+            <label><span>앞(z)</span><input type="range" id="mpZ-right" min="-0.3" max="0.3" step="0.005" value="0" /></label>
+        </fieldset>
+        <fieldset id="mpControlsL" disabled>
+            <legend>왼손</legend>
+            <label><span>grip</span><input type="checkbox" id="mpGrip-left" /> 클러치</label>
+            <label><span>트리거</span><input type="range" id="mpTrig-left" min="0" max="1" step="0.01" value="0" /></label>
+            <label><span>옆(x)</span><input type="range" id="mpX-left" min="-0.3" max="0.3" step="0.005" value="0" /></label>
+            <label><span>높이(y)</span><input type="range" id="mpY-left" min="-0.3" max="0.3" step="0.005" value="0" /></label>
+            <label><span>앞(z)</span><input type="range" id="mpZ-left" min="-0.3" max="0.3" step="0.005" value="0" /></label>
+        </fieldset>
+        <div class="mp-row">
+            <button id="mpBtnA">A 시작·ready</button>
+            <button id="mpBtnB">B 해제</button>
+        </div>
+        <div class="mp-row">
+            <button id="mpFwd" class="mp-hold">▲</button>
+            <button id="mpBack" class="mp-hold">▼</button>
+            <button id="mpTurnL" class="mp-hold">◀</button>
+            <button id="mpTurnR" class="mp-hold">▶</button>
+        </div>
+        <div class="mp-keys">
+            키보드: <b>M</b> 활성 · <b>W/S</b> 앞뒤 <b>A/D</b> 좌우 <b>R/F</b> 위아래 (홀드,
+            <b>Shift</b>=왼손) · <b>G</b> grip · <b>T</b> 트리거 · <b>Enter</b>=A
+            <b>⌫</b>=B · <b>방향키</b> 주행
+        </div>
+    </div>
+    <pre id="hudOverlay">(포즈 샘플 없음)</pre>
+
+    <!-- 오프라인 직결 환경 대비: Babylon.js·GLB 로더는 CDN이 아니라 로컬 번들로 로드 -->
+    <script src="vendor/babylon.js"></script>
+    <script src="vendor/babylonjs.loaders.min.js"></script>
+    <script type="module" src="src/main.js"></script>
+</body>
+</html>

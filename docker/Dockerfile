@@ -1,10 +1,10 @@
 # RBY1 웹 기반 VR Teleop 서버 이미지
 # 구성: conda-forge Python 3.11 + Pinocchio/CasADi(IK) + rby1-sdk + aiortc(WebRTC) + pyrealsense2(D455)
 # Pinocchio는 PyPI wheel(pin)에 casadi 빌드가 없어 conda-forge(micromamba) 배포판을 사용한다.
-# RBY1 모델(URDF·GLB)은 저장소 models/rby1a에 포함되어 있어 이미지에는 넣지 않는다 —
-# SDK를 올릴 때는 pip 버전과 같은 태그의 모델로 그 폴더를 함께 갱신할 것 (버전 불일치 주의).
+# RBY1 모델(URDF·GLB)은 저장소 assets/rby1a에 포함되어 있어 이미지에는 넣지 않는다 —
+# SDK를 올릴 때는 pip 버전과 같은 태그의 모델로 assets/rby1a를 함께 갱신할 것 (버전 불일치 주의).
 
-# 로봇 제어 API 버전 고정 (저장소 models/rby1a와 같은 릴리스를 유지한다)
+# 로봇 제어 API 버전 고정 (저장소 assets/rby1a와 같은 릴리스를 유지한다)
 ARG RBY1_SDK_VERSION=0.9.1
 
 FROM debian:bookworm-slim
@@ -35,7 +35,7 @@ RUN /opt/bin/micromamba create -y -p /opt/venv -c conda-forge \
 ENV PATH=/opt/venv/bin:$PATH
 
 # 나머지 서버 의존성은 같은 환경에 pip으로 설치
-# - rby1-sdk: 로봇 gRPC 제어 / aiortc: WebRTC 영상 / websockets·aiohttp: WSS 업링크·HTTPS 정적 서빙
+# - rby1-sdk: 로봇 gRPC 제어 / aiortc: WebRTC DataChannel / aiohttp: HTTPS 정적 서빙·WebRTC 시그널링
 # - pyrealsense2: PyPI wheel 사용 (librealsense 소스 빌드 대신, D455 스트림 취득에 충분)
 RUN pip install --no-cache-dir \
     "rby1-sdk==${RBY1_SDK_VERSION}" \
