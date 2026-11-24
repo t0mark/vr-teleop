@@ -11,9 +11,15 @@ Manus SDK(MANUS 배포 패키지)를 `reference/manusSDK/`에 풀어 둔다. 이
 `reference/manusSDK/Python/manus_sdk`가 이미지에 설치된다 (`docker/compose.yml`의 `additional_contexts`).
 
 ```bash
-cd docker && docker compose up -d --build
-docker exec airlab_hw_teleop python /workspace/tools/make_https_cert.py
+cd docker
+docker compose build
+docker compose run --rm teleop python /workspace/tools/make_https_cert.py
+docker compose up -d
 ```
+
+인증서는 컨테이너를 띄우기 전에 만들어야 한다. 인증서가 없으면 서버가 기동 중에 종료되고,
+restart 정책 때문에 재시작이 반복되어 `docker exec`가 실패할 수 있다.
+인증서·개인키는 저장소 루트의 `certs/`(gitignore)에 생성된다. 정적 서빙 루트(`web/`) 밖이라 브라우저로 노출되지 않는다.
 
 부팅 시 자동으로 켜질 모드는 `docker/.env`(gitignore, 호스트별 파일)의 `TELEOP_MODE`로 정한다.
 파일이 없으면 기본값은 `dev`(시뮬 로봇 + 합성 카메라, 하드웨어 불필요)이다.
@@ -32,17 +38,27 @@ echo "TELEOP_MODE=deploy" > docker/.env
 
 기동 후에는 PC 브라우저 데스크톱 뷰의 좌상단 모드 버튼으로 dev ↔ deploy 런타임 전환도 가능하다
 (이때는 `docker/.env`를 건드릴 필요 없이 그 세션에서만 즉시 바뀐다).
+현재 모드가 아닌 쪽의 버튼만 보이고, 전환 실패로 현재 모드가 없으면 dev·deploy 버튼이 모두 보인다.
 
 ```bash
-# 로그 확인
+# 서버 로그 확인 (크기 회전 파일 로그)
 tail -f logs/web_api.log
 
-# 재시작 (설정 변경 후 반영)
+# 콘솔 출력 확인 (TSDF 워커 로그, Python 크래시 출력 포함)
+docker logs -f airlab_hw_teleop
+
+# 재시작 (코드·config.py 변경 후 반영)
 docker restart airlab_hw_teleop
+
+# compose.yml·Dockerfile 변경 반영 (restart로는 반영되지 않음)
+cd docker && docker compose up -d --build
 
 # 종료 (재부팅해도 다시 켜지 않으려면)
 cd docker && docker compose stop
 ```
+
+`docker stop`·`docker restart`·`docker compose stop`은 종료 정리를 거친다. 제어를 해제한 뒤 로봇·손·카메라 부품을 해제하며,
+최대 30초(`stop_grace_period`)까지 기다린다.
 
 ### 다지 손 (Inspire RH56E2, deploy 모드)
 
@@ -68,8 +84,8 @@ cd docker && docker compose stop
 
 장비: Quest 3 헤드셋 + 손등에 부착한 Quest 3 컨트롤러(양손) + Manus 장갑(양손)
 - 팔은 컨트롤러가 추적되는 동안 항상 컨트롤러 위치·자세 델타를 추종한다 (클러치 델타 방식, 1m = 1m)
-- 로봇 손가락은 Manus 장갑의 손가락 굽힘·엄지 회전을 따라간다
-- body-tracking으로 로봇 팔꿈치 자세를 유도한다
+- 팔 IK는 손 위치 정확도를 우선한다 (Pink 미분 IK, 팔꿈치는 ready 자세 쪽으로 정해진다)
+- 로봇 손가락은 Manus 장갑의 손 키포인트를 dex-retargeting(DexPilot)으로 리타게팅한 값을 따라간다
 - **제어 시작**: `Enter VR` 후 2초 뒤 자동 시작 (ready pose 이동 후 추종)
 - **제어 종료**: VR을 종료(Quest 시스템 메뉴)하면 로봇이 ready pose로 복귀한 뒤 제어를 해제한다
   - 브라우저 자체가 꺼지는 등 종료 신호를 못 보내면 업링크 두절(3초)로 그 자리에서 해제된다
@@ -82,10 +98,13 @@ cd docker && docker compose stop
 - 동글 라이선스에 Integrated 기능이 있어야 한다
 - 페어링되지 않은 장갑이 보이면 서버가 자동으로 페어링한다 (장갑 전원을 켜 두면 된다)
 - 장갑 접속이 실패해도 팔 제어는 그대로 동작한다 (손가락은 마지막 값 유지)
-- 손가락 정규화 범위는 `MANUS_*_RANGE_DEG`로 보정한다. 로그에 손별 원시 각도가 5초마다 남는다:
+- 손가락: raw skeleton 노드로 손 키포인트 21개를 만들고 `teleop/glove/hand_retargeter.py`가 DexPilot으로
+  Inspire 손 관절각을 푼다 (계산용 URDF는 `assets/inspire_hand/retarget/`, dex-urdf 출처).
+  크기 배율·필터 계수는 `config.py`의 `HAND_RETARGET_*`로 조정한다. 로그에 손별 손 크기·굽힘이 5초마다 남는다:
   ```bash
   grep manus_glove logs/web_api.log | tail
   ```
+- 자동 페어링은 `MANUS_AUTO_PAIR`로 끄고, 사용할 장갑은 `MANUS_ALLOWED_GLOVE_IDS`로 제한할 수 있다 (비우면 전체 허용)
 
 dev 모드에서 VR 없이: 웹 수동 조작 패널 또는 합성 시나리오
 ```bash

@@ -49,6 +49,10 @@ class RobotBackend(JointSource):
         """현재 연결 상태를 반환한다."""
 
     @abstractmethod
+    def set_velocity_limits(self, limits: dict[str, float]):
+        """명령에 실을 관절별 속도 상한 {관절명: rad/s}을 설정한다. 반환값 없음."""
+
+    @abstractmethod
     def prepare_control(self) -> bool:
         """전원·서보·제어 관리자를 명령 수신 가능 상태로 만든다. 반환: 성공 여부 (블로킹)."""
 

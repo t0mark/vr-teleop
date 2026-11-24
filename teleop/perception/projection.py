@@ -14,14 +14,16 @@ from teleop.camera.camera_interface import Intrinsics
 class DepthProjector:
     """스트라이드 격자의 정규화 이미지 좌표를 보관하고 depth → base 점 변환을 수행한다."""
 
-    def __init__(self, intr: Intrinsics, stride: int):
-        """intr: color(=정렬 기준) 내부 파라미터, stride: 픽셀 다운샘플 간격."""
+    def __init__(self, intrinsics: Intrinsics, stride: int):
+        """intrinsics: color(=정렬 기준) 내부 파라미터, stride: 픽셀 다운샘플 간격."""
         self._stride = stride
-        u = np.arange(0, intr.width, stride, dtype=np.float32)
-        v = np.arange(0, intr.height, stride, dtype=np.float32)
-        uu, vv = np.meshgrid(u, v)
-        self._xn = (uu - intr.ppx) / intr.fx
-        self._yn = (vv - intr.ppy) / intr.fy
+
+        # 스트라이드 격자 픽셀의 정규화 이미지 좌표
+        pixel_u = np.arange(0, intrinsics.width, stride, dtype=np.float32)
+        pixel_v = np.arange(0, intrinsics.height, stride, dtype=np.float32)
+        grid_u, grid_v = np.meshgrid(pixel_u, pixel_v)
+        self._x_norm = (grid_u - intrinsics.ppx) / intrinsics.fx
+        self._y_norm = (grid_v - intrinsics.ppy) / intrinsics.fy
 
     @property
     def stride(self) -> int:
@@ -33,12 +35,14 @@ class DepthProjector:
 
         depth: (H, W) float32 m. 픽셀 단위 판정(마스크 등)에 쓴다.
         """
-        s = self._stride
-        d = depth[::s, ::s]
-        pts_cam = np.stack([self._xn * d, self._yn * d, d], axis=-1)
+        # 격자 깊이로 광학 프레임 점 복원
+        grid_depth = depth[::self._stride, ::self._stride]
+        cam_points = np.stack([self._x_norm * grid_depth, self._y_norm * grid_depth, grid_depth], axis=-1)
+
+        # 광학 프레임 → base
         rot = np.asarray(cam_rot, dtype=np.float32)
         pos = np.asarray(cam_pos, dtype=np.float32)
-        return pts_cam @ rot.T + pos
+        return cam_points @ rot.T + pos
 
 
 def box_mask(points: np.ndarray, box) -> np.ndarray:

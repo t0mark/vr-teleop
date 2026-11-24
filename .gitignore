@@ -4,7 +4,7 @@ __pycache__/
 
 oss/
 logs/
-web/certs/
+certs/
 docker/.env
 agent.md
 plan.md

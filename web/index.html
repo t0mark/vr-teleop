@@ -31,7 +31,7 @@
             margin: 0 0 8px 0;
             font-size: 14px;
         }
-        /* display: block이 hidden 속성(UA의 display: none)을 덮어쓰지 않게 명시적으로 복원 */
+        /* hidden 속성 버튼 숨김 */
         #ui button[hidden] {
             display: none;
         }
@@ -58,16 +58,17 @@
         #enterVrBtn:active {
             background: #1b5e20;
         }
-        /* 모드 전환 버튼: 전환 대상이 deploy(실로봇 연결)면 경고색 */
-        #modeBtn.to-deploy {
+        /* 모드 전환 버튼: deploy(실로봇 연결) 전환은 경고색 */
+        #modeDeployBtn {
             border-color: #e65100;
             color: #ffb27a;
         }
-        #modeBtn:disabled {
+        #modeDevBtn:disabled,
+        #modeDeployBtn:disabled {
             opacity: 0.45;
             cursor: wait;
         }
-        /* 수동 조작 패널 (dev 모드 데스크톱 전용): VR 대신 같은 업링크 샘플을 만드는 입력 UI */
+        /* 수동 조작 패널 (dev 모드 데스크톱 전용) */
         #manualPanel {
             position: absolute;
             top: 12px;
@@ -157,10 +158,11 @@
     <div id="ui">
         <p id="status">초기화 중...</p>
         <button id="enterVrBtn" hidden>Enter VR</button>
-        <button id="modeBtn" hidden></button>
+        <button id="modeDevBtn" hidden>dev로 전환</button>
+        <button id="modeDeployBtn" hidden>deploy로 전환</button>
     </div>
 
-    <!-- 수동 조작 (dev 모드 데스크톱 전용): VR 입력 대신 패널로 공통 형식 업링크 샘플을 만들어 보낸다 -->
+    <!-- 수동 조작 패널 (dev 모드 데스크톱 전용): 패널 입력으로 공통 형식 업링크 샘플을 보낸다 -->
     <div id="manualPanel" hidden>
         <label class="mp-title"><input type="checkbox" id="mpEnable" /> 수동 조작</label>
         <fieldset id="mpControls" disabled>
@@ -191,7 +193,7 @@
     </div>
     <pre id="hudOverlay">(포즈 샘플 없음)</pre>
 
-    <!-- 오프라인 직결 환경 대비: Babylon.js·GLB 로더는 CDN이 아니라 로컬 번들로 로드 -->
+    <!-- Babylon.js·GLB 로더 로컬 번들 로드 -->
     <script src="vendor/babylon.js"></script>
     <script src="vendor/babylonjs.loaders.min.js"></script>
     <script type="module" src="src/main.js"></script>

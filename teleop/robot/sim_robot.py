@@ -31,12 +31,15 @@ class SimRobotBackend(RobotBackend):
         """tau: 명령 추종 1차 지연 시간 상수(초). hand: 측정 손가락 굽힘을 위임할 손 백엔드."""
         self._tau = tau
         self._hand = hand
-        # send_targets(executor 스레드)와 joint_positions(이벤트 루프)가 교차 접근하므로 락으로 보호
+
+        # 시뮬 관절 상태(executor 스레드와 공유)와 연결·스트림 상태
         self._lock = threading.Lock()
         self._positions: dict[str, float] = {name: 0.0 for name in COMMAND_JOINT_NAMES}
         self._connected = False
         self._streaming = False
         self._velocity_limits: dict[str, float] = {}
+
+        # 통계: 수신 명령 수·최대 추종 오차·통계 시작 시각
         self._sent = 0
         self._worst_err = 0.0
         self._stats_t = 0.0
@@ -54,7 +57,7 @@ class SimRobotBackend(RobotBackend):
         return self._streaming
 
     def set_velocity_limits(self, limits: dict[str, float]):
-        """관절별 속도 상한을 보관한다 (실 SDK와 인터페이스를 맞추기 위한 것, 동역학에는 미사용)."""
+        """관절별 속도 상한을 보관한다 (동역학에는 미사용). 반환값 없음."""
         self._velocity_limits = dict(limits)
 
     # ── 연결·상태 ────────────────────────────────────────────────────────────
@@ -78,10 +81,7 @@ class SimRobotBackend(RobotBackend):
             return dict(self._positions)
 
     def hand_fingers(self) -> dict[str, list[float]] | None:
-        """손가락 측정 굽힘을 반환한다 (손 백엔드가 없거나 준비 전이면 None).
-
-        실로봇(Rby1Backend)과 같은 위임 구조 — 상태 서비스의 대체 공급자 경로까지 동일하게 자극된다.
-        """
+        """손가락 측정 굽힘을 반환한다 (손 백엔드가 없거나 준비 전이면 None). 손 백엔드에 위임한다."""
         if self._hand is None:
             return None
         return self._hand.fingers()
@@ -89,11 +89,8 @@ class SimRobotBackend(RobotBackend):
     # ── 제어 준비·스트림 ─────────────────────────────────────────────────────
 
     def prepare_control(self) -> bool:
-        """전원·서보·Control Manager 준비 흉내. 반환: True (블로킹 시간만 재현).
-
-        executor에서 불리는 블로킹 경로임을 유지하려고 짧게 대기한다 — 준비 중에 제어 루프가
-        sync_to를 계속 도는 실기기 타이밍을 dev에서도 재현하기 위함.
-        """
+        """전원·서보·Control Manager 준비 흉내. 반환: True (짧게 블로킹한다)."""
+        # 준비 소요 시간 흉내
         time.sleep(0.2)
         logger.info("시뮬 제어 준비 완료 (전원·서보·CM 흉내)")
         return True
@@ -110,6 +107,7 @@ class SimRobotBackend(RobotBackend):
         named: 목표 관절각 {관절명: rad}, dt: 명령 주기(초).
         누락 관절은 실 SDK의 KeyError → False 규약과 맞춰 실패로 처리한다.
         """
+        # 스트림이 닫혀 있거나 누락 관절이 있으면 실패
         if not self._streaming:
             return False
         if any(name not in named for name in self._positions):
@@ -117,15 +115,17 @@ class SimRobotBackend(RobotBackend):
             self.stop_stream()
             return False
 
-        # 1차 지연 계수: dt/τ가 커도 1을 넘지 않아 (목표를 지나치지 않아) 수치적으로 안전
+        # 1차 지연으로 관절 상태를 목표 쪽으로 진행하고 최대 추종 오차 기록
         alpha = 1.0 - math.exp(-dt / self._tau)
         with self._lock:
-            worst = 0.0
+            worst_error = 0.0
             for name in self._positions:
-                err = named[name] - self._positions[name]
-                worst = max(worst, abs(err))
-                self._positions[name] += err * alpha
-            self._worst_err = max(self._worst_err, worst)
+                tracking_error = named[name] - self._positions[name]
+                worst_error = max(worst_error, abs(tracking_error))
+                self._positions[name] += tracking_error * alpha
+            self._worst_err = max(self._worst_err, worst_error)
+
+        # 수신 통계
         self._sent += 1
         self._log_stats()
         return True
@@ -142,12 +142,14 @@ class SimRobotBackend(RobotBackend):
         now = time.monotonic()
         if now - self._stats_t < config.POSE_STATS_INTERVAL_S:
             return
-        dt = now - self._stats_t
+        elapsed = now - self._stats_t
+
+        # 최대 추종 오차를 꺼내 초기화하고 로그
         with self._lock:
-            worst = self._worst_err
+            worst_error = self._worst_err
             self._worst_err = 0.0
         logger.info(
-            f"시뮬 명령 수신 {self._sent / dt:.1f} Hz, 최대 추종 오차 {worst:.3f} rad"
+            f"시뮬 명령 수신 {self._sent / elapsed:.1f} Hz, 최대 추종 오차 {worst_error:.3f} rad"
         )
         self._sent = 0
         self._stats_t = now

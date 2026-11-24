@@ -20,11 +20,13 @@ import numpy as np
 
 from teleop.utils.transforms import robot_points_to_webxr_matrix
 
+# MSH1 매직('MSH1' 리틀엔디언)과 스냅샷 시작 플래그
 MESH_MAGIC = 0x3148534D
 MESH_FLAG_SNAPSHOT = 0x1
 
 logger = logging.getLogger("packets")
 
+# 패킷 헤더 (magic, flags, block_count, reserved, t)와 블록 헤더 (layer, key[3], nv, nt)
 _MESH_HEADER = struct.Struct("<IIIId")
 _BLOCK_HEADER = struct.Struct("<iiiiII")
 
@@ -42,11 +44,13 @@ def _pack_block(key, verts: np.ndarray | None, colors: np.ndarray | None, tris: 
     """블록 하나를 직렬화해 반환한다 (key = (layer, bx, by, bz), verts가 None이면 삭제 블록)."""
     if verts is None:
         return _BLOCK_HEADER.pack(*key, 0, 0)
+
+    # 정점·색 → 4바이트 정렬 패딩 → 삼각형 인덱스
     xyz = _to_webxr_mm(verts).tobytes()
     rgb = np.ascontiguousarray(colors, dtype=np.uint8).tobytes()
-    pad = b"\x00" * ((-(len(xyz) + len(rgb))) % 4)
-    idx = np.ascontiguousarray(tris, dtype="<u4").tobytes()
-    return _BLOCK_HEADER.pack(*key, len(verts), len(tris)) + xyz + rgb + pad + idx
+    padding = b"\x00" * ((-(len(xyz) + len(rgb))) % 4)
+    indices = np.ascontiguousarray(tris, dtype="<u4").tobytes()
+    return _BLOCK_HEADER.pack(*key, len(verts), len(tris)) + xyz + rgb + padding + indices
 
 
 def pack_mesh_blocks(blocks: list, snapshot: bool, max_bytes: int) -> list[bytes]:
@@ -56,26 +60,27 @@ def pack_mesh_blocks(blocks: list, snapshot: bool, max_bytes: int) -> list[bytes
     블록 하나만으로 max_bytes를 넘으면 보낼 수 없으므로(상대가 연결을 끊는다) 그 블록은 빼고 오류를 남긴다 —
     전송 블록 크기(MESH_SPLIT_SIZE·_WS)를 줄여야 한다는 신호다.
     """
-    packets = []
+    # 블록 본문을 max_bytes 이하 묶음으로 나누기
+    chunks = []
     chunk = []
     chunk_bytes = _MESH_HEADER.size
-
     for key, verts, colors, tris in blocks:
         body = _pack_block(key, verts, colors, tris)
         if _MESH_HEADER.size + len(body) > max_bytes:
             logger.error(f"메시 블록 {key}가 메시지 상한 초과({len(body)} B) — 전송 제외, 전송 블록 크기를 줄여야 한다")
             continue
         if chunk and chunk_bytes + len(body) > max_bytes:
-            packets.append(chunk)
+            chunks.append(chunk)
             chunk = []
             chunk_bytes = _MESH_HEADER.size
         chunk.append(body)
         chunk_bytes += len(body)
-    if chunk or (snapshot and not packets):
-        packets.append(chunk)
+    if chunk or (snapshot and not chunks):
+        chunks.append(chunk)
 
-    out = []
-    for i, bodies in enumerate(packets):
-        flags = MESH_FLAG_SNAPSHOT if (snapshot and i == 0) else 0
-        out.append(_MESH_HEADER.pack(MESH_MAGIC, flags, len(bodies), 0, time.time()) + b"".join(bodies))
-    return out
+    # 묶음마다 헤더를 붙여 패킷 완성 (스냅샷이면 첫 패킷에 플래그)
+    packets = []
+    for chunk_index, bodies in enumerate(chunks):
+        flags = MESH_FLAG_SNAPSHOT if (snapshot and chunk_index == 0) else 0
+        packets.append(_MESH_HEADER.pack(MESH_MAGIC, flags, len(bodies), 0, time.time()) + b"".join(bodies))
+    return packets

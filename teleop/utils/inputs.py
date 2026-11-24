@@ -3,12 +3,23 @@
 입력 기기(Quest 3 컨트롤러 손 위치, 데스크톱 수동 조작)는 웹 입력 모듈이 모두 같은
 공통 샘플 형식으로 변환해 보낸다. 서버는 이 모듈의 접근자로만 샘플을 읽어 기기를 구분하지 않는다.
 VR 샘플에는 fingers가 없다 — 손가락은 서버에 붙은 Manus 장갑(teleop/glove/manus_glove.py)이 직접 준다.
+데스크톱 수동 조작 샘플에만 fingers가 실린다.
+
+브라우저가 보내는 원본 샘플 (WebXR 좌표계):
     sample = {
         t,
-        hands: {left/right: {pos[3], quat[x,y,z,w], follow: bool, fingers[6](선택)} | None},
+        hands: {left/right: {pos[3], quat[x,y,z,w], follow: bool, fingers[6](선택)} | None} | None,
         head: {pos[3], quat[x,y,z,w]} | None,                   # 조작자 시점(XR viewer) 포즈 (선택)
         command: "start" | "ready" | "stop" | "home" | None,   # 발생한 순간의 샘플에만 실린다
-        body: {supported, jointCount, joints} | None,
+        body: {supported, jointCount, joints: {이름: {pos[3], quat[x,y,z,w]}}} | None,
+    }
+이 모듈의 접근자가 읽는 샘플은 RtcHub.latest_robot — 위 원본을 transforms.webxr_sample_to_robot로
+로봇 좌표계로 바꾼 사본이다 (형식 검증 완료):
+    sample = {
+        t, command,
+        hands: {left/right: {pos[3], quat[x,y,z,w], follow, fingers(선택)} | None},   # 항상 dict (빈 dict 가능)
+        head: {pos[3], quat[x,y,z,w]} | None,
+        body: {joints: {이름: {pos[3], quat[x,y,z,w]}}},                              # 항상 dict, supported·jointCount 없음
     }
 fingers 순서: [little, ring, middle, index, thumb_bend, thumb_rotate], 0=펼침, 1=굽힘.
 """
@@ -17,6 +28,7 @@ import numpy as np
 
 # 손가락 자유도 수 (RH56E2: 새끼·약지·중지·검지·엄지 굽힘·엄지 회전)
 FINGER_COUNT = 6
+
 # 서버가 받아들이는 명령 목록 (home: ready pose로 복귀한 뒤 제어 해제)
 COMMANDS = ("start", "ready", "stop", "home")
 
@@ -53,15 +65,21 @@ def hand_fingers(sample: dict | None, side: str) -> list[float] | None:
     """해당 손의 손가락 굽힘 6개(0-1 클립)를 반환한다 (손이 없거나 형식이 틀리면 None)."""
     hand = _hand(sample, side)
     fingers = hand.get("fingers") if hand else None
+
+    # 개수 검사
     if not isinstance(fingers, (list, tuple)) or len(fingers) != FINGER_COUNT:
         return None
+
+    # 숫자 변환 후 0-1 클립
     try:
-        values = np.clip(np.asarray(fingers, dtype=float), 0.0, 1.0)
+        clipped_fingers = np.clip(np.asarray(fingers, dtype=float), 0.0, 1.0)
     except (TypeError, ValueError):
         return None
-    if not np.all(np.isfinite(values)):
+
+    # 유한값 검사
+    if not np.all(np.isfinite(clipped_fingers)):
         return None
-    return values.tolist()
+    return clipped_fingers.tolist()
 
 
 def sample_command(sample: dict | None) -> str | None:

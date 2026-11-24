@@ -1,27 +1,24 @@
-// 가상 RBY1 렌더링: 서버의 robot_config(링크-메시 구성 + 카메라 장착)로 GLB를 로드하고
-// robot_state(링크 포즈, WebXR 좌표)로 매 틱 자세를 갱신한다. VR·데스크톱 공용.
+// 가상 RBY1 렌더링: robot_config(링크-메시 구성 + 머리 카메라 장착)로 GLB를 로드하고
+// robot_state(링크 포즈, WebXR 좌표)로 자세를 갱신한다. VR·데스크톱 공용.
 //
-// 좌표 처리 (유도는 code.md 참고, 요약):
-// - 링크 포즈·visual origin: 서버가 WebXR 기저로 변환해 보냄 → 왼손 씬 표시는
-//   z-거울 켤레: pos (x,y,-z), quat (-x,-y,z,w)
-// - GLB 정점은 URDF 링크 프레임(z-up) 데이터이므로 기저 재정의 보정 필요.
-//   glTF 로더의 RH→LH 변환(__root__ = x-거울)까지 합쳐, 메시 래퍼에
-//   W = M_z·Cᵀ·M_x = 순수 회전(축 (-1,1,1)/√3, 120°) = 쿼터니언 (-0.5, 0.5, 0.5, 0.5)를 적용
-// - 주의: GLTFLoaderCoordinateSystemMode.FORCE_RIGHT_HANDED는 절대 사용 금지 —
-//   씬 전체를 오른손 좌표계로 강제 전환해 카메라·HUD·컬링이 전부 깨진다 (겪은 회귀)
-// - 머리 장착 카메라(D455 GLB, camera_link 프레임 = 링크와 같은 z-up 규약)도 같은 체인으로 붙인다
+// 좌표 처리:
+// - 링크 포즈·visual origin(WebXR 기저) → 왼손 씬 표시: z-거울 켤레 pos (x,y,-z), quat (-x,-y,z,w)
+// - GLB 정점(URDF 링크 프레임, z-up) → 표시 좌표: 메시 래퍼에 쿼터니언 (-0.5, 0.5, 0.5, 0.5) 적용
+//   (glTF 로더의 RH→LH x-거울 포함, 축 (-1,1,1)/√3 120° 회전)
+// - glTF 로더 좌표계 모드는 기본값을 쓴다 (FORCE_RIGHT_HANDED 사용 금지)
+// - 머리 장착 카메라(D455 GLB, camera_link 프레임)도 같은 체인으로 붙인다
 //
 // 표시 모드
-// - "all": 전 링크 표시 (데스크톱 모니터링·데모)
-// - "body": 머리 링크·카메라만 숨김 (VR 로봇 시점 — 시점이 머리 카메라 위치라 머리 메시가 시야를 가린다.
-//   팔·손·몸통은 보여 조작자가 로봇 자신을 본다)
+// - "all": 전 링크 표시
+// - "body": 머리 링크·카메라만 숨김 (VR 로봇 시점)
 // - "none": 메시 숨김 (링크 변환과 머리 카메라 앵커는 그대로 갱신)
 
-// 로봇 base = 씬 원점. 재구성 메시 등 로봇 기준 표시물이 같은 원점을 공유한다
-// (사람 아바타만 HUMAN_OFFSET 만큼 옆에 세운다)
+// 로봇 base 위치 (씬 원점, 로봇 기준 표시물 공통)
 export const ROBOT_OFFSET = { x: 0, y: 0, z: 0 };
 // 머리 링크 이름 접두사 ("body" 표시 모드에서 숨기는 대상)
 const HEAD_LINK_PREFIX = "link_head_";
+// GLB 정점 기저 보정 쿼터니언 (x, y, z, w)
+const MESH_BASIS_FIX_QUAT = [-0.5, 0.5, 0.5, 0.5];
 
 export class RobotView {
     /**
@@ -34,9 +31,9 @@ export class RobotView {
         this._linkNodes = new Map();
         // 표시 대상명("링크명" 또는 "camera") → 메시 origin 노드 (표시 전환 단위)
         this._meshNodes = new Map();
-        // 머리 장착 카메라 프레임 노드: VR 시점 앵커. 표시 전환과 무관하게 항상 살아 있어야
-        // 팔만 보이는 모드에서도 시점 위치를 계산할 수 있다
+        // 머리 장착 카메라 프레임 노드 (VR 시점 앵커, 표시 전환과 무관)
         this._cameraAnchor = null;
+        // 구성 로드 진행 여부와 현재 표시 모드
         this._loading = false;
         this._mode = "all";
     }
@@ -49,20 +46,41 @@ export class RobotView {
         if (this._root !== null || this._loading) return;
         this._loading = true;
 
-        this._root = new BABYLON.TransformNode("robotRoot", this._scene);
-        this._root.position.set(ROBOT_OFFSET.x, ROBOT_OFFSET.y, ROBOT_OFFSET.z);
+        try {
+            // 로봇 루트 노드
+            this._root = new BABYLON.TransformNode("robotRoot", this._scene);
+            this._root.position.set(ROBOT_OFFSET.x, ROBOT_OFFSET.y, ROBOT_OFFSET.z);
 
-        const jobs = [];
-        for (const [name, info] of Object.entries(cfg.links)) {
-            // 링크별 mesh_base가 있으면 그것을 쓴다 (손 메시는 로봇 공통 메시 폴더 밖에 있다)
-            jobs.push(this._buildLink(name, info, info.mesh_base ?? cfg.mesh_base));
+            // 링크·카메라 구축 (링크별 mesh_base가 있으면 그것을 쓴다)
+            const jobs = [];
+            for (const [name, info] of Object.entries(cfg.links)) {
+                jobs.push(this._buildLink(name, info, info.mesh_base ?? cfg.mesh_base));
+            }
+            if (cfg.camera) jobs.push(this._buildCamera(cfg.camera));
+            await Promise.allSettled(jobs);
+
+            // 현재 표시 모드를 로드된 메시에 반영
+            this.setVisibleParts(this._mode);
+            console.log(`[robot] 링크 ${this._linkNodes.size}개 메시 로드 완료`);
+        } catch (e) {
+            console.error("[robot] robot_config 적용 실패 (다음 robot_config에서 재구축):", e);
+            this._disposeModel();
+        } finally {
+            this._loading = false;
         }
-        if (cfg.camera) jobs.push(this._buildCamera(cfg.camera));
-        await Promise.allSettled(jobs);
-        this._loading = false;
-        // 로드 도중 바뀐 표시 모드를 새로 붙은 메시에도 반영한다
-        this.setVisibleParts(this._mode);
-        console.log(`[robot] 링크 ${this._linkNodes.size}개 메시 로드 완료`);
+    }
+
+    /**
+     * 구축 중이던 로봇 노드·메시를 모두 폐기하고 초기 상태로 되돌린다. 반환값 없음.
+     */
+    _disposeModel() {
+        if (this._root !== null) {
+            this._root.dispose();
+            this._root = null;
+        }
+        this._linkNodes.clear();
+        this._meshNodes.clear();
+        this._cameraAnchor = null;
     }
 
     /**
@@ -86,7 +104,7 @@ export class RobotView {
             console.warn(`[robot] 카메라 장착 링크 없음: ${cam.link}`);
             return;
         }
-        // 시점 앵커는 메시와 같은 프레임이지만 별도 노드로 둔다 (메시를 숨겨도 위치는 유효해야 함)
+        // 시점 앵커 노드 (메시 노드와 같은 프레임의 별도 노드)
         this._cameraAnchor = this._makeOriginNode(linkNode, "cameraAnchor", cam.origin);
         await this._attachMesh(linkNode, "camera", cam.origin, cam.mesh_base, cam.mesh);
     }
@@ -112,11 +130,12 @@ export class RobotView {
         const originNode = this._makeOriginNode(parent, name, origin);
         this._meshNodes.set(name, originNode);
 
-        // 기저 보정 래퍼: 링크 프레임(z-up) 정점 → 표시 좌표 정합 (파일 상단 유도 참고)
+        // 기저 보정 래퍼: 링크 프레임(z-up) 정점 → 표시 좌표
         const wrapper = new BABYLON.TransformNode(`meshfix_${name}`, this._scene);
         wrapper.parent = originNode;
-        wrapper.rotationQuaternion = new BABYLON.Quaternion(-0.5, 0.5, 0.5, 0.5);
+        wrapper.rotationQuaternion = new BABYLON.Quaternion(...MESH_BASIS_FIX_QUAT);
 
+        // GLB 로드 후 래퍼 아래에 붙인다
         try {
             const result = await BABYLON.SceneLoader.ImportMeshAsync(null, meshBase, meshFile, this._scene);
             for (const mesh of result.meshes) {
@@ -130,7 +149,7 @@ export class RobotView {
 
     /**
      * 표시 모드를 전환한다. mode: "all"(전체), "body"(머리 링크·카메라 제외), "none"(숨김). 반환값 없음.
-     * 링크 변환 노드는 그대로 두고 메시 노드만 끄므로, 숨긴 상태에서도 FK 체인과 시점 앵커는 유효하다.
+     * 메시 노드만 끄고 링크 변환 노드·시점 앵커는 유지한다.
      */
     setVisibleParts(mode) {
         this._mode = mode;
@@ -145,7 +164,7 @@ export class RobotView {
      */
     cameraAnchorPosition() {
         if (this._cameraAnchor === null) return null;
-        // 부모 체인이 이번 프레임에 갱신되었을 수 있으므로 강제로 월드 행렬을 다시 계산한다
+        // 부모 체인을 포함한 월드 행렬 재계산
         this._cameraAnchor.computeWorldMatrix(true);
         return this._cameraAnchor.getAbsolutePosition();
     }
@@ -157,10 +176,12 @@ export class RobotView {
         for (const [name, pose] of Object.entries(state.links)) {
             const node = this._linkNodes.get(name);
             if (!node) continue;
-            const p = pose.pos, q = pose.quat;
+
             // WebXR 오른손 → 표시(왼손): z 거울 켤레
-            node.position.set(p[0], p[1], -p[2]);
-            node.rotationQuaternion.set(-q[0], -q[1], q[2], q[3]);
+            const position = pose.pos;
+            const quat = pose.quat;
+            node.position.set(position[0], position[1], -position[2]);
+            node.rotationQuaternion.set(-quat[0], -quat[1], quat[2], quat[3]);
         }
     }
 }

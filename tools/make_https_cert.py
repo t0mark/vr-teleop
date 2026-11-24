@@ -1,4 +1,4 @@
-"""자체 서명 TLS 인증서 생성 도구: WebXR secure context 요건용 (web/certs/에 출력).
+"""자체 서명 TLS 인증서 생성 도구: WebXR secure context 요건용 (저장소 루트 certs/에 출력).
 
 사용법 (컨테이너 내부, 최초 1회):
     python tools/make_https_cert.py [--ip 192.168.100.1 ...] [--days 825]
@@ -65,7 +65,7 @@ def generate_self_signed_cert(ips: list[str], days: int) -> tuple[bytes, bytes]:
 
 
 def write_cert_files(ips: list[str], days: int):
-    """인증서·키를 생성해 config에 정의된 경로(web/certs/)에 기록한다. 반환값 없음."""
+    """인증서·키를 생성해 config에 정의된 경로(certs/)에 기록한다. 반환값 없음."""
     config.CERT_DIR.mkdir(parents=True, exist_ok=True)
     cert_pem, key_pem = generate_self_signed_cert(ips, days)
     config.CERT_FILE.write_bytes(cert_pem)
