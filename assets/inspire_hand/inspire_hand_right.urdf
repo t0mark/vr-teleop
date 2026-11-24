@@ -1,0 +1,165 @@
+<robot name="inspire_hand_right">
+  <joint name="right_hand_mount" type="fixed">
+    <parent link="ee_right" />
+    <child link="right_hand_base" />
+    <origin xyz="0 0 0" rpy="0 0 -1.570796" />
+  </joint>
+  <link name="right_hand_base">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_hand_base.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <link name="right_index_proximal">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_index_proximal.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_index_proximal_joint" type="revolute">
+    <parent link="right_hand_base" />
+    <child link="right_index_proximal" />
+    <origin xyz="-0.000530 0.032200 -0.156430" rpy="0 0 0" />
+    <axis xyz="0.000000 1.000000 0.000000" />
+    <limit lower="0.000000" upper="1.396263" effort="10" velocity="5" />
+  </joint>
+  <link name="right_index_distal">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_index_distal.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_index_distal_joint" type="revolute">
+    <parent link="right_index_proximal" />
+    <child link="right_index_distal" />
+    <origin xyz="-0.003130 0.000000 -0.033170" rpy="0 0 0" />
+    <axis xyz="0.000000 1.000000 0.000000" />
+    <limit lower="0.000000" upper="1.396263" effort="10" velocity="5" />
+  </joint>
+  <link name="right_middle_proximal">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_middle_proximal.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_middle_proximal_joint" type="revolute">
+    <parent link="right_hand_base" />
+    <child link="right_middle_proximal" />
+    <origin xyz="-0.000530 0.010700 -0.157040" rpy="0 0 0" />
+    <axis xyz="0.000000 1.000000 0.000000" />
+    <limit lower="0.000000" upper="1.396263" effort="10" velocity="5" />
+  </joint>
+  <link name="right_middle_distal">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_middle_distal.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_middle_distal_joint" type="revolute">
+    <parent link="right_middle_proximal" />
+    <child link="right_middle_distal" />
+    <origin xyz="-0.003130 0.000000 -0.032560" rpy="0 0 0" />
+    <axis xyz="0.000000 1.000000 0.000000" />
+    <limit lower="0.000000" upper="1.396263" effort="10" velocity="5" />
+  </joint>
+  <link name="right_ring_proximal">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_ring_proximal.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_ring_proximal_joint" type="revolute">
+    <parent link="right_hand_base" />
+    <child link="right_ring_proximal" />
+    <origin xyz="-0.000530 -0.011800 -0.156170" rpy="0 0 0" />
+    <axis xyz="0.000000 1.000000 0.000000" />
+    <limit lower="0.000000" upper="1.396263" effort="10" velocity="5" />
+  </joint>
+  <link name="right_ring_distal">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_ring_distal.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_ring_distal_joint" type="revolute">
+    <parent link="right_ring_proximal" />
+    <child link="right_ring_distal" />
+    <origin xyz="-0.003130 0.000000 -0.033430" rpy="0 0 0" />
+    <axis xyz="0.000000 1.000000 0.000000" />
+    <limit lower="0.000000" upper="1.396263" effort="10" velocity="5" />
+  </joint>
+  <link name="right_little_proximal">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_little_proximal.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_little_proximal_joint" type="revolute">
+    <parent link="right_hand_base" />
+    <child link="right_little_proximal" />
+    <origin xyz="-0.000530 -0.033800 -0.153820" rpy="0 0 0" />
+    <axis xyz="0.000000 1.000000 0.000000" />
+    <limit lower="0.000000" upper="1.396263" effort="10" velocity="5" />
+  </joint>
+  <link name="right_little_distal">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_little_distal.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_little_distal_joint" type="revolute">
+    <parent link="right_little_proximal" />
+    <child link="right_little_distal" />
+    <origin xyz="-0.003130 0.000000 -0.033180" rpy="0 0 0" />
+    <axis xyz="0.000000 1.000000 0.000000" />
+    <limit lower="0.000000" upper="1.396263" effort="10" velocity="5" />
+  </joint>
+  <link name="right_thumb_yaw">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_thumb_yaw.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_thumb_yaw_joint" type="revolute">
+    <parent link="right_hand_base" />
+    <child link="right_thumb_yaw" />
+    <origin xyz="-0.037300 0.046700 -0.089000" rpy="0 0 0" />
+    <axis xyz="0.000000 0.000000 1.000000" />
+    <limit lower="-0.916298" upper="0.392699" effort="10" velocity="5" />
+  </joint>
+  <link name="right_thumb_distal">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="./meshes/right_thumb_distal.glb" />
+      </geometry>
+    </visual>
+  </link>
+  <joint name="right_thumb_distal_joint" type="revolute">
+    <parent link="right_thumb_yaw" />
+    <child link="right_thumb_distal" />
+    <origin xyz="-0.037700 0.038500 -0.015600" rpy="0 0 0" />
+    <axis xyz="0.739038 0.645276 -0.193501" />
+    <limit lower="-0.652753" upper="0.797615" effort="10" velocity="5" />
+  </joint>
+</robot>

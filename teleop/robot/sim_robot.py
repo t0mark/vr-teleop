@@ -1,7 +1,7 @@
 """시뮬 로봇 백엔드: RobotBackend 계약을 하드웨어 없이 구현해 제어 경로 전체를 dev 모드에서 돌린다.
 
 Rby1Backend 자리에 그대로 꽂히는 대체 부품이다. 상위 서비스(RobotController·RobotStateBroadcaster·
-PointCloudStreamer)는 어느 쪽인지 모른다 — 이것이 dev/deploy 모드가 같은 코드로 도는 근거다.
+PerceptionService)는 어느 쪽인지 모른다 — 이것이 dev/deploy 모드가 같은 코드로 도는 근거다.
 
 명령 추종 모델: 매 send_targets에서 관절 상태를 1차 지연으로 목표에 접근시킨다.
     state += (target − state) · (1 − exp(−dt/τ)),  τ = config.SIM_TRACKING_TAU
@@ -17,7 +17,7 @@ import math
 import threading
 import time
 
-from teleop.robot.robot_interface import GripperBackend, RobotBackend
+from teleop.robot.robot_interface import HandBackend, RobotBackend
 from teleop.robot.rby1_robot import COMMAND_JOINT_NAMES
 from teleop.utils import config
 
@@ -27,10 +27,10 @@ logger = logging.getLogger("sim_robot")
 class SimRobotBackend(RobotBackend):
     """시뮬 관절 상태·스트림 상태를 소유한다."""
 
-    def __init__(self, tau: float = config.SIM_TRACKING_TAU, gripper: GripperBackend | None = None):
-        """tau: 명령 추종 1차 지연 시간 상수(초). gripper: 측정 열림 정도를 위임할 그리퍼 백엔드."""
+    def __init__(self, tau: float = config.SIM_TRACKING_TAU, hand: HandBackend | None = None):
+        """tau: 명령 추종 1차 지연 시간 상수(초). hand: 측정 손가락 굽힘을 위임할 손 백엔드."""
         self._tau = tau
-        self._gripper = gripper
+        self._hand = hand
         # send_targets(executor 스레드)와 joint_positions(이벤트 루프)가 교차 접근하므로 락으로 보호
         self._lock = threading.Lock()
         self._positions: dict[str, float] = {name: 0.0 for name in COMMAND_JOINT_NAMES}
@@ -77,19 +77,14 @@ class SimRobotBackend(RobotBackend):
         with self._lock:
             return dict(self._positions)
 
-    def gripper_openness(self) -> dict[str, float] | None:
-        """그리퍼 측정 열림 정도를 반환한다 (그리퍼 백엔드가 없거나 준비 전이면 None).
+    def hand_fingers(self) -> dict[str, list[float]] | None:
+        """손가락 측정 굽힘을 반환한다 (손 백엔드가 없거나 준비 전이면 None).
 
         실로봇(Rby1Backend)과 같은 위임 구조 — 상태 서비스의 대체 공급자 경로까지 동일하게 자극된다.
         """
-        if self._gripper is None:
+        if self._hand is None:
             return None
-        return self._gripper.openness()
-
-    def power_tool_flange(self, voltage: int = config.GRIPPER_TOOL_VOLTAGE) -> bool:
-        """툴 플랜지 전원 공급 흉내: 항상 성공한다. 반환: True (main.py의 그리퍼 기동 순서 유지용)."""
-        logger.info(f"시뮬 툴 플랜지 {voltage}V 공급")
-        return True
+        return self._hand.fingers()
 
     # ── 제어 준비·스트림 ─────────────────────────────────────────────────────
 

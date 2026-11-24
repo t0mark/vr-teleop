@@ -1,14 +1,14 @@
-"""사람 포즈 → IK 목표 매핑: grip 클러치 + 상대 델타 방식의 EE(그리퍼) 트래킹.
+"""사람 포즈 → IK 목표 매핑: follow 클러치 + 상대 델타 방식의 EE(손) 트래킹.
 
 동작 방식 (실사용 검증된 기존 Unity teleop(custom-teleop)과 동일한 구조):
-- **grip(squeeze) > 임계값을 쥐고 있는 동안만 추종한다** (클러치)
+- **공통 샘플의 follow가 True인 동안만 추종한다** (클러치 — VR 손 추적은 추적 중 항상, 수동 조작은 grip을 켠 동안)
 - engagement 순간의 손 포즈와 로봇 TCP 포즈를 앵커로 잡고, 이후 손의 **델타**만 이식:
     목표 위치 = TCP앵커 + R_몸통앵커ᵀ·(손 현재 - 손앵커)      [1m = 1m]
     목표 자세 = Δ자세 · TCP앵커자세,  Δ자세 = R_몸통앵커ᵀ·(R_손현재 · R_손앵커⁻¹)·R_몸통앵커
 - 목표가 항상 로봇의 현재 자세에서 연속적으로 시작하므로 VR 진입·트래킹 점프 시
   팔이 급변할 수 없다 (절대 매핑의 진입 폭주를 구조적으로 차단)
 - 절대 자세 오프셋 캘리브레이션(자연 자세 앵커)이 필요 없다 — 델타만 쓰므로
-- grip을 놓으면 해당 팔은 현재 자세 유지 (solver의 hold)
+- follow가 꺼지면 해당 팔은 현재 자세 유지 (solver의 hold)
 - **팔꿈치 트래킹**: 체결 중 body-tracking이 잡히면 사람 (어깨 볼→팔꿈치) 단위벡터 × 로봇 상완을
   팔꿈치 목표로 함께 전달 (자세 유도 소프트 코스트, 미검출 시 자동 비활성)
 
@@ -29,6 +29,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 from teleop.utils import config
+from teleop.utils.inputs import hand_follow, hand_pose
 
 logger = logging.getLogger("ik_mapper")
 
@@ -62,15 +63,14 @@ class TargetMapper:
         sample: RtcHub.latest_robot 형식. current_fk: RobotModel.fk_frames(현재 q).
         반환: {side: {wrist_pos, wrist_quat, elbow_vec} | None} — None이면 해당 팔 현재 자세 유지.
         """
-        hands = sample.get("hands", {})
-        joints = sample.get("body", {}).get("joints", {})
+        joints = (sample.get("body") or {}).get("joints", {})
         R_body = self._human_torso_rotation(joints)
 
         targets = {}
         for side in ("left", "right"):
-            hand = hands.get(side)
-            gripping = hand is not None and hand.get("squeeze", 0.0) > config.GRIP_ENGAGE_THRESHOLD
-            if not gripping:
+            pose = hand_pose(sample, side)
+            following = pose is not None and hand_follow(sample, side)
+            if not following:
                 # 클러치 해제: 앵커를 버리고 팔은 현재 자세 유지
                 if self._engaged[side]:
                     logger.info(f"클러치 해제({side}) — 현재 자세 유지")
@@ -78,8 +78,8 @@ class TargetMapper:
                 targets[side] = None
                 continue
 
-            p_hand = np.asarray(hand["pos"], dtype=float)
-            R_hand = R.from_quat(hand["quat"]).as_matrix()
+            p_hand = np.asarray(pose[0], dtype=float)
+            R_hand = R.from_quat(pose[1]).as_matrix()
 
             # engagement 순간: 손·TCP·몸통 앵커 캡처 → 이후 델타가 여기서부터 누적
             if not self._engaged[side]:

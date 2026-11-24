@@ -7,6 +7,9 @@
   실로봇에서 읽은 관절값(토르소·머리 포함)을 그대로 반영해야 하기 때문이다.
 - 축소 모델(reduced): 양팔 14관절만 자유, 나머지는 ready pose 고정. IK 최적화 전용이다.
 
+손: URDF의 그리퍼(ee_* 몸체·프리즘 손가락)를 떼고 Inspire RH56E2 손 URDF 조각(assets/inspire_hand)을 붙인다.
+손가락 굽힘 6값은 hand_joint_positions()로 손 관절각(손가락 마디·엄지)으로 바꿔 시각화 FK에 넣는다.
+
 관절값 입출력은 항상 {관절명: 각도(rad)} 사전으로 주고받는다. pinocchio의 q 순서는
 모델 구성에 따라 달라지고(축소 모델은 left가 먼저) 연속 관절(바퀴)은 q를 2칸(cos·sin) 차지하므로,
 인덱스로 다루면 좌우가 뒤바뀌는 함정이 있다.
@@ -45,7 +48,7 @@ FRAME_NAMES = {
 
 
 def load_fixed_urdf_xml(path) -> str:
-    """URDF를 읽어 표준 urdfdom이 거부하는 wheel limit(effort 누락)을 보정한 XML을 반환한다."""
+    """URDF를 읽어 보정한 XML을 반환한다: wheel limit(effort 누락) 보정 + 그리퍼를 Inspire 손으로 교체."""
     tree = ET.parse(path)
     root = tree.getroot()
     # effort 없는 limit에 기본값 주입 (해당 관절은 IK에서 잠그므로 값 자체는 무의미)
@@ -53,7 +56,37 @@ def load_fixed_urdf_xml(path) -> str:
         limit = joint.find("limit")
         if limit is not None and "effort" not in limit.attrib:
             limit.set("effort", "0")
+    _attach_inspire_hands(root)
     return ET.tostring(root, encoding="unicode")
+
+
+def _attach_inspire_hands(root: ET.Element):
+    """그리퍼 손가락 관절·링크와 그리퍼 몸체 메시를 떼고 손 URDF 조각을 붙인다. 반환값 없음 (root 수정).
+
+    손 메시 경로는 브라우저가 그대로 쓰도록 URL(HAND_MESH_URL_PREFIX)로 바꿔 둔다.
+    """
+    # 그리퍼 손가락: ee_*에 붙은 프리즘 관절과 그 자식 링크
+    finger_links = set()
+    for joint in list(root.findall("joint")):
+        if joint.get("type") == "prismatic" and joint.find("parent").get("link").startswith("ee_"):
+            finger_links.add(joint.find("child").get("link"))
+            root.remove(joint)
+
+    # 그리퍼 손가락 링크 제거 + ee 링크의 그리퍼 몸체 메시 제거 (링크·프레임은 IK가 쓰므로 유지)
+    for link in list(root.findall("link")):
+        if link.get("name") in finger_links:
+            root.remove(link)
+        elif link.get("name") in ("ee_right", "ee_left"):
+            for visual in link.findall("visual"):
+                link.remove(visual)
+
+    # 손 URDF 조각 (장착 관절 parent = ee_{side})
+    for side in ("right", "left"):
+        fragment = ET.parse(config.HAND_MODEL_DIR / f"inspire_hand_{side}.urdf").getroot()
+        for element in fragment:
+            for mesh in element.iter("mesh"):
+                mesh.set("filename", config.HAND_MESH_URL_PREFIX + mesh.get("filename").split("/")[-1])
+            root.append(element)
 
 
 def _origin_to_webxr(origin_el) -> dict:
@@ -114,7 +147,7 @@ class RobotModel:
         }
 
         self._visuals = self._parse_visuals(xml)
-        self._fingers = self._parse_finger_joints(xml)
+        self._visual_meshes = self._parse_visual_meshes(xml)
         self._log_geometry()
 
     # ── 관절값 변환 ──────────────────────────────────────────────────────────
@@ -166,10 +199,11 @@ class RobotModel:
     # ── URDF 파싱 ───────────────────────────────────────────────────────────
 
     def _parse_visuals(self, xml: str) -> dict:
-        """URDF에서 링크별 visual(메시 파일·origin)을 추출해 반환한다.
+        """URDF에서 링크별 visual(메시 파일·origin)을 추출해 반환한다 (브라우저 전송용).
 
-        반환: {링크명: {mesh: glb 파일명, origin: {pos, quat(WebXR 기저)}}} — dae는 동명 glb로
-        치환 (rby1-sdk meshes/에 전 파일의 glb 대응본 존재 확인됨).
+        반환: {링크명: {mesh: glb 파일명, origin: {pos, quat(WebXR 기저)}, mesh_base(선택)}} — dae는 동명 glb로
+        치환 (rby1-sdk meshes/에 전 파일의 glb 대응본 존재 확인됨). 메시 경로가 URL(/로 시작)이면 그 디렉터리를
+        mesh_base로 따로 실어 보낸다 (손 메시 — 로봇 공통 mesh_base 대신 사용).
         """
         visuals = {}
         root = ET.fromstring(xml)
@@ -180,79 +214,90 @@ class RobotModel:
             mesh = visual.find("geometry/mesh")
             if mesh is None:
                 continue
-            filename = mesh.get("filename", "").split("/")[-1].replace(".dae", ".glb")
-            visuals[link.get("name")] = {
-                "mesh": filename,
+            filename = mesh.get("filename", "")
+            entry = {
+                "mesh": filename.split("/")[-1].replace(".dae", ".glb"),
                 "origin": _origin_to_webxr(visual.find("origin")),
             }
+            if filename.startswith("/"):
+                entry["mesh_base"] = filename.rsplit("/", 1)[0] + "/"
+            visuals[link.get("name")] = entry
         return visuals
 
-    def _parse_finger_joints(self, xml: str) -> list[dict]:
-        """URDF에서 그리퍼 손가락(프리즘) 관절 정보를 추출해 반환한다.
+    def _parse_visual_meshes(self, xml: str) -> dict:
+        """링크별 visual 메시의 디스크 경로와 링크 로컬 origin 변환을 반환한다 (자기 몸 마스크용).
 
-        손가락은 실로봇 상태에 포함되지 않고 FK로도 안 움직이므로, 시각화에서 열림 정도
-        (openness)에 따라 수동 합성하기 위한 메타데이터를 미리 뽑아 둔다.
-        반환: [{child, parent, side, T_origin(4x4), axis(3, 관절 프레임), q_open(열림 시 관절값)}]
+        반환: {링크명: (메시 GLB 경로(Path), origin 4x4)}. 손 메시(URL 경로)는 HAND_MESH_DIR, 나머지는 RBY1_MESH_DIR.
         """
-        fingers = []
+        meshes = {}
         root = ET.fromstring(xml)
-        for joint in root.iter("joint"):
-            if joint.get("type") != "prismatic":
+        for link in root.iter("link"):
+            visual = link.find("visual")
+            mesh = visual.find("geometry/mesh") if visual is not None else None
+            if mesh is None:
                 continue
-            parent = joint.find("parent").get("link")
-            if not parent.startswith("ee_"):
-                continue
-            origin = joint.find("origin")
-            xyz = [float(v) for v in origin.get("xyz", "0 0 0").split()]
-            rpy = [float(v) for v in origin.get("rpy", "0 0 0").split()]
+            filename = mesh.get("filename", "")
+            file = filename.split("/")[-1].replace(".dae", ".glb")
+            directory = config.HAND_MESH_DIR if filename.startswith("/") else config.RBY1_MESH_DIR
+            origin = visual.find("origin")
             T = np.eye(4)
-            T[:3, :3] = R.from_euler("xyz", rpy).as_matrix()
-            T[:3, 3] = xyz
-            limit = joint.find("limit")
-            lo, hi = float(limit.get("lower")), float(limit.get("upper"))
-            # 열림 방향 관절값: 한계 중 절대값이 큰 쪽 (URDF상 q=0이 닫힘)
-            q_open = lo if abs(lo) > abs(hi) else hi
-            fingers.append({
-                "child": joint.find("child").get("link"),
-                "parent": parent,
-                "side": "right" if parent.endswith("right") else "left",
-                "T_origin": T,
-                "axis": np.array([float(v) for v in joint.find("axis").get("xyz").split()]),
-                "q_open": q_open,
-            })
-        return fingers
+            if origin is not None:
+                T[:3, :3] = R.from_euler("xyz", [float(v) for v in origin.get("rpy", "0 0 0").split()]).as_matrix()
+                T[:3, 3] = [float(v) for v in origin.get("xyz", "0 0 0").split()]
+            meshes[link.get("name")] = (directory / file, T)
+        return meshes
+
+    def visual_meshes(self) -> dict:
+        """링크별 (메시 GLB 경로, 링크 로컬 origin 4x4)를 반환한다."""
+        return dict(self._visual_meshes)
+
+    # ── 손 ──────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def hand_joint_positions(fingers: dict | None) -> dict[str, float]:
+        """손가락 굽힘 {left/right: [6] 0-1}을 손 모델 관절각 {관절명: rad}으로 바꿔 반환한다 (없는 손은 빠진다).
+
+        순서 [little, ring, middle, index, thumb_bend, thumb_rotate]. 네 손가락은 근위·원위 마디를 같은 각으로
+        굽히고, 엄지는 기준 굽힘 값(모델 기준 자세)에서의 차이에 범위를 곱한다 (config.HAND_*).
+        """
+        out = {}
+        finger_max = np.radians(config.HAND_FINGER_MAX_DEG)
+        yaw_ref, yaw_span = config.HAND_THUMB_YAW
+        bend_ref, bend_span = config.HAND_THUMB_BEND
+        for side, values in (fingers or {}).items():
+            if values is None:
+                continue
+            curl = np.clip(np.asarray(values, dtype=float), 0.0, 1.0)
+            for name, index in (("little", 0), ("ring", 1), ("middle", 2), ("index", 3)):
+                angle = float(finger_max * curl[index])
+                out[f"{side}_{name}_proximal_joint"] = angle
+                out[f"{side}_{name}_distal_joint"] = angle
+            out[f"{side}_thumb_yaw_joint"] = float(np.radians(yaw_span) * (curl[5] - yaw_ref))
+            out[f"{side}_thumb_distal_joint"] = float(np.radians(bend_span) * (curl[4] - bend_ref))
+        return out
 
     # ── 시각화 FK (전체 모델) ────────────────────────────────────────────────
 
-    def fk_visual(self, named: dict | None, gripper_open: dict | None = None) -> dict:
-        """관절값 사전으로 visual이 있는 모든 링크의 포즈를 계산해 반환한다.
+    def fk_visual(self, named: dict | None, fingers: dict | None = None) -> dict:
+        """관절값·손가락 굽힘으로 visual이 있는 모든 링크의 포즈를 계산해 반환한다.
 
         named: {관절명: 각도(rad)} (실로봇 측정값 또는 IK 결과). None이면 ready pose.
-        gripper_open: {left/right: 열림 정도 0(닫힘)-1(열림)} — 손가락 링크 포즈를 이 값으로 합성.
+        fingers: {left/right: [6] 굽힘 0-1} — 손 모델 관절각으로 바꿔 함께 반영 (없으면 손은 기준 자세).
         반환: {링크명: (pos(3), quat(x,y,z,w))} — 로봇 base 프레임.
         """
-        q = self.q_full_from_named(named)
-        pin.framesForwardKinematics(self.full_model, self.full_data, q)
+        self.full_fk(named, fingers)
         out = {}
         for name in self._visuals:
             M = self.full_data.oMf[self.full_model.getFrameId(name)]
             out[name] = (M.translation.copy(), pin.Quaternion(M.rotation).coeffs().copy())
-
-        # 손가락은 측정값이 없으므로 열림 정도로 합성: T_child = T_ee · T_origin · Trans(axis·q)
-        if gripper_open is not None:
-            for f in self._fingers:
-                if f["child"] not in self._visuals:
-                    continue
-                openness = float(np.clip(gripper_open.get(f["side"], 0.0), 0.0, 1.0))
-                M_ee = self.full_data.oMf[self.full_model.getFrameId(f["parent"])]
-                T_ee = np.eye(4)
-                T_ee[:3, :3] = M_ee.rotation
-                T_ee[:3, 3] = M_ee.translation
-                T_slide = np.eye(4)
-                T_slide[:3, 3] = f["axis"] * (f["q_open"] * openness)
-                T = T_ee @ f["T_origin"] @ T_slide
-                out[f["child"]] = (T[:3, 3].copy(), R.from_matrix(T[:3, :3]).as_quat())
         return out
+
+    def full_fk(self, named: dict | None, fingers: dict | None = None):
+        """관절값·손가락 굽힘으로 전체 모델 프레임 FK를 갱신한다 (결과는 full_data.oMf). 반환값 없음."""
+        merged = dict(named or {})
+        merged.update(self.hand_joint_positions(fingers))
+        q = self.q_full_from_named(merged if merged else None)
+        pin.framesForwardKinematics(self.full_model, self.full_data, q)
 
     def camera_pose(self, named: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
         """머리 장착 카메라의 광학 프레임 포즈 (pos(3), R(3x3))를 로봇 base 프레임으로 반환한다.
@@ -284,17 +329,17 @@ class RobotModel:
         """축소 모델 관절각 q(14)로 IK 관련 프레임 포즈를 계산해 반환한다.
 
         반환: {side: {wrist/elbow/shoulder: (pos(3), quat(x,y,z,w))}} — 로봇 base 프레임.
-        wrist 위치는 그리퍼 TCP(집는 지점, ee 로컬 GRIPPER_TCP_OFFSET 적용) 기준이다.
+        wrist 위치는 손 TCP(파지 중심, ee 로컬 HAND_TCP_OFFSET 적용) 기준이다.
         """
         pin.framesForwardKinematics(self.model, self.data, q)
-        tcp_offset = np.asarray(config.GRIPPER_TCP_OFFSET)
+        tcp_offset = np.asarray(config.HAND_TCP_OFFSET)
         out = {}
         for side, ids in self.frame_ids.items():
             out[side] = {}
             for key, fid in ids.items():
                 M = self.data.oMf[fid]
                 pos = M.translation.copy()
-                # 손 목표는 그리퍼 몸체가 아니라 집는 지점에 대응시킨다
+                # 손 목표는 손 몸체가 아니라 파지 중심에 대응시킨다
                 if key == "wrist":
                     pos = pos + M.rotation @ tcp_offset
                 out[side][key] = (pos, pin.Quaternion(M.rotation).coeffs().copy())
@@ -366,6 +411,18 @@ class RobotModel:
             joint = self.full_model.joints[jid]
             if joint.nv == 1:
                 limits[self.full_model.names[jid]] = float(self.full_model.velocityLimit[joint.idx_v])
+        return limits
+
+    def position_limits_named(self) -> dict[str, tuple[float, float]]:
+        """전체 모델의 1자유도 관절 위치 한계 {관절명: (하한, 상한) rad}를 반환한다 (로봇 명령 범위 제한용)."""
+        limits = {}
+        for jid in range(1, self.full_model.njoints):
+            joint = self.full_model.joints[jid]
+            if joint.nq == 1:
+                limits[self.full_model.names[jid]] = (
+                    float(self.full_model.lowerPositionLimit[joint.idx_q]),
+                    float(self.full_model.upperPositionLimit[joint.idx_q]),
+                )
         return limits
 
     def ready_positions(self) -> dict[str, float]:

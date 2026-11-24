@@ -1,20 +1,21 @@
-"""Quest 대체 합성 포즈 송신기 (dev 모드용): 서버와 WebRTC로 협상해 가짜 업링크 샘플을 보낸다.
+"""VR 클라이언트 대체 합성 포즈 송신기 (dev 모드용): 서버와 WebRTC로 협상해 가짜 업링크 샘플을 보낸다.
 
-실기기 없이 조작 시나리오 전체를 재현해 IK·제어·그리퍼 경로를 자극한다.
-샘플 형식은 web/src/xr/pose_reader.js의 실제 업링크와 동일하다 (WebXR 좌표: x=우, y=상, -z=전방, m).
+실기기 없이 조작 시나리오 전체를 재현해 IK·제어·손 경로를 자극한다.
+샘플은 웹 입력 모듈이 만드는 공통 샘플 형식(teleop/utils/inputs.py)과 동일하다
+(WebXR 좌표: x=우, y=상, -z=전방, m).
 시그널링(HTTP POST /rtc/offer)·state 채널 송신은 web/src/net/rtc_link.js와 같은 방식이다.
 
 시나리오 (1사이클, 초):
      0-2   대기 (손 rest 자세)
-     2     오른손 A 상승 에지 → 제어 시작 + ready 복귀
+     2     command "start" (제어 시작 버튼) → 제어 시작 + ready 복귀
      2-8   ready 복귀 대기
-     8-18  grip 쥐고 양손 원운동 (클러치 추종)
-    12-16  트리거 삼각 램프 0→1→0 (그리퍼 개폐)
-    18     오른손 B 상승 에지 → 제어 해제
+     8-18  follow 켜고 양손 원운동 (클러치 추종)
+    12-16  손가락 굽힘 삼각 램프 0→1→0 (수동 조작 트리거와 같은 매핑)
+    18     command "stop" (제어 해제 버튼) → 제어 해제
     18-21  대기
 
 사용법 (컨테이너 내부, 서버 기동 후):
-    python tools/fake_quest.py [--host localhost] [--rate 50] [--cycles 1]
+    python tools/fake_vr_client.py [--host localhost] [--rate 50] [--cycles 1]
 """
 
 import argparse
@@ -27,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-# 스크립트 직접 실행(python tools/fake_quest.py) 시 sys.path[0]은 tools/라 teleop 패키지가 안 보인다
+# 스크립트 직접 실행(python tools/fake_vr_client.py) 시 sys.path[0]은 tools/라 teleop 패키지가 안 보인다
 # → 저장소 루트를 넣어 어느 위치에서 실행해도 동작하게 한다
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -37,7 +38,7 @@ from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 from teleop.utils import config
 from teleop.utils.log import setup_logging
 
-logger = logging.getLogger("fake_vr_quest3")
+logger = logging.getLogger("fake_vr_client")
 
 # 시나리오 구간 경계(초): (이름, 시작, 끝)
 _PHASES = [
@@ -56,6 +57,9 @@ _HAND_REST = {"right": (0.30, 1.00, -0.25), "left": (-0.30, 1.00, -0.25)}
 _CIRCLE_CENTER = {"right": (0.30, 1.20, -0.40), "left": (-0.30, 1.20, -0.40)}
 _CIRCLE_RADIUS = 0.15
 _CIRCLE_OMEGA = 1.25
+# 손가락 굽힘 램프 구간(초)과 엄지 회전 고정값 (web/src/manual_control.js의 트리거 매핑과 동일)
+_CURL_RAMP = (12.0, 16.0)
+_THUMB_ROTATE_FIXED = 1.0
 
 # STUN 서버 없음: 로봇 내장 PC 안에서 자기 자신에게 접속하는 것도, Quest 직결 환경도
 # NAT 통과가 필요 없다 (teleop/net/rtc_hub.py와 동일한 이유)
@@ -79,21 +83,23 @@ def _triangle(t: float, start: float, end: float) -> float:
     return u if u <= 1.0 else 2.0 - u
 
 
-class FakeQuest:
-    """시나리오 시각 → 업링크 샘플 생성을 담당한다 (송수신 통계 포함)."""
+class FakeVrClient:
+    """시나리오 시각 → 공통 형식 업링크 샘플 생성을 담당한다 (송수신 통계 포함)."""
 
     def __init__(self, rate_hz: float, cycles: int):
         self._rate_hz = rate_hz
         self._cycles = cycles
         self._sent = 0
         self._rx_state = 0
-        self._rx_pcd = 0
+        self._rx_mesh = 0
         self._last_phase = ""
+        # 직전 샘플의 구간: 명령은 구간에 들어선 첫 샘플에만 싣는다 (실제 클라이언트의 누른 순간 에지와 동일)
+        self._command_phase = ""
 
     # ── 샘플 생성 ────────────────────────────────────────────────────────────
 
     def sample(self, t_cycle: float) -> dict:
-        """사이클 내 시각 t(초)의 업링크 샘플(JSON dict)을 만들어 반환한다."""
+        """사이클 내 시각 t(초)의 공통 형식 업링크 샘플(JSON dict)을 만들어 반환한다."""
         phase = _phase_at(t_cycle)
         if phase != self._last_phase:
             logger.info(f"시나리오 구간: {phase} (t={t_cycle:.1f}s)")
@@ -103,19 +109,31 @@ class FakeQuest:
         for side in ("left", "right"):
             pos = self._hand_pos(side, t_cycle, phase)
             engaged = phase == "clutch_motion"
-            trigger = _triangle(t_cycle, 12.0, 16.0) if engaged else 0.0
-            a = 1 if (side == "right" and phase == "press_A") else 0
-            b = 1 if (side == "right" and phase == "press_B") else 0
+            curl = _triangle(t_cycle, *_CURL_RAMP) if engaged else 0.0
             hands[side] = {
                 "pos": list(pos),
                 "quat": [0.0, 0.0, 0.0, 1.0],
-                "trigger": trigger,
-                "squeeze": 1.0 if engaged else 0.0,
-                # xr-standard 버튼 순서: 0=trigger, 1=squeeze, 4=A/X, 5=B/Y
-                "buttons": [1 if trigger > 0.5 else 0, 1 if engaged else 0, 0, 0, a, b],
+                "follow": engaged,
+                "fingers": [curl] * 5 + [_THUMB_ROTATE_FIXED],
             }
 
-        return {"t": time.monotonic() * 1000.0, "body": {"joints": self._body_joints(hands)}, "hands": hands}
+        joints = self._body_joints(hands)
+        return {
+            "t": time.monotonic() * 1000.0,
+            "hands": hands,
+            "command": self._command(phase),
+            "body": {"supported": True, "jointCount": len(joints), "joints": joints},
+        }
+
+    def _command(self, phase: str) -> str | None:
+        """명령 구간(press_A/press_B)에 처음 들어선 샘플이면 start/stop을, 아니면 None을 반환한다."""
+        command = {"press_A": "start", "press_B": "stop"}.get(phase)
+        entered = phase != self._command_phase
+        self._command_phase = phase
+        if command is None or not entered:
+            return None
+        logger.info(f"명령 송신: {command}")
+        return command
 
     def _hand_pos(self, side: str, t: float, phase: str) -> tuple[float, float, float]:
         """구간별 손목 위치를 반환한다 (클러치 구간은 원운동, 그 외 rest).
@@ -165,7 +183,7 @@ class FakeQuest:
 
         pc = RTCPeerConnection(configuration=_RTC_CONFIG)
         state_ch = pc.createDataChannel("state", ordered=True)
-        pcd_ch = pc.createDataChannel("pcd", ordered=False, maxRetransmits=0)
+        mesh_ch = pc.createDataChannel("mesh", ordered=True)
         opened = asyncio.Event()
 
         @state_ch.on("open")
@@ -178,9 +196,9 @@ class FakeQuest:
             if '"robot_state"' in data:
                 self._rx_state += 1
 
-        @pcd_ch.on("message")
-        def _on_pcd_message(_data):
-            self._rx_pcd += 1
+        @mesh_ch.on("message")
+        def _on_mesh_message(_data):
+            self._rx_mesh += 1
 
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
@@ -203,7 +221,7 @@ class FakeQuest:
             await self._send_loop(state_ch)
         finally:
             await pc.close()
-        logger.info(f"종료: 송신 {self._sent}건, 수신 robot_state {self._rx_state}건, 포인트클라우드 {self._rx_pcd}건")
+        logger.info(f"종료: 송신 {self._sent}건, 수신 robot_state {self._rx_state}건, 메시 패킷 {self._rx_mesh}건")
 
     async def _send_loop(self, channel):
         """고정 주기로 샘플을 송신한다 (사이클 완료까지). 반환값 없음."""
@@ -221,7 +239,7 @@ class FakeQuest:
             if now - stats_t >= 5.0:
                 logger.info(
                     f"송신 {self._sent / (now - t0):.1f} Hz 평균, 수신 robot_state {self._rx_state}건, "
-                    f"포인트클라우드 {self._rx_pcd}건 (경과 {elapsed:.0f}/{total:.0f}초)"
+                    f"메시 패킷 {self._rx_mesh}건 (경과 {elapsed:.0f}/{total:.0f}초)"
                 )
                 stats_t = now
             await asyncio.sleep(max(0.0, period - (time.monotonic() - now)))
@@ -229,7 +247,7 @@ class FakeQuest:
 
 def main():
     """인자를 해석하고 송신기를 실행한다."""
-    parser = argparse.ArgumentParser(description="dev 모드용 합성 포즈 송신기 (Quest 대체)")
+    parser = argparse.ArgumentParser(description="dev 모드용 합성 포즈 송신기 (VR 클라이언트 대체)")
     parser.add_argument("--host", default="localhost", help="서버 주소 (기본 localhost)")
     parser.add_argument("--port", type=int, default=config.HTTPS_PORT, help=f"HTTPS 포트 (기본 {config.HTTPS_PORT})")
     parser.add_argument("--rate", type=float, default=50.0, help="송신 주기 Hz (기본 50, Quest 실측 45)")
@@ -238,7 +256,7 @@ def main():
 
     setup_logging()
     try:
-        asyncio.run(FakeQuest(args.rate, args.cycles).run(args.host, args.port))
+        asyncio.run(FakeVrClient(args.rate, args.cycles).run(args.host, args.port))
     except KeyboardInterrupt:
         logger.info("중단 요청 수신, 종료")
 

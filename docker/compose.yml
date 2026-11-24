@@ -8,6 +8,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Manus SDK Python 패키지 (MANUS 배포 SDK를 reference/manusSDK에 풀어 둔다 — README 참고)
+      additional_contexts:
+        manus_sdk: ../reference/manusSDK/Python
     # 로봇 gRPC(192.168.30.1)·Quest 직결·WebRTC ICE를 단순화하기 위해 호스트 네트워크 사용
     network_mode: host
     volumes:
@@ -16,12 +19,11 @@ services:
       # D455 접근: pyrealsense2 wheel은 V4L2 백엔드라 /dev/video*(UVC 노드)가 필요하고,
       # 노드 번호가 재연결 때마다 바뀌므로 /dev 전체를 노출한다 (열 수 있는 장치는 아래 cgroup 규칙으로 제한)
       - /dev:/dev
-    # USB(189)·V4L(81)·USB 시리얼(188, 그리퍼 Dynamixel 버스 /dev/rby1_gripper) 문자 장치만 접근 허용
+    # USB(189)·V4L(81) 문자 장치만 접근 허용 (D455, Manus 동글은 libusb로 USB(189) 사용)
     # (privileged 대신 최소 권한)
     device_cgroup_rules:
       - "c 189:* rmw"
       - "c 81:* rmw"
-      - "c 188:* rmw"
     # dockerd가 부팅 시 자동 기동되도록 등록되어 있어, 이 정책만으로 재부팅 후 컨테이너가 자동 복귀한다.
     # 수동으로 stop한 경우에는 재부팅해도 다시 켜지지 않는다 (always와 차이).
     restart: unless-stopped

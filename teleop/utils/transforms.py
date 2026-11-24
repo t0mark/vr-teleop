@@ -70,21 +70,27 @@ def robot_points_to_webxr_matrix() -> np.ndarray:
 def webxr_sample_to_robot(sample: dict) -> dict:
     """프론트 업링크 샘플(JSON dict) 전체를 로봇 좌표계로 변환한 사본을 반환한다.
 
-    입력 구조: { body: {joints: {이름: {pos, quat}}}, hands: {left/right: {pos, quat, ...}} }
-    포즈 필드만 변환하고 트리거·버튼 등 나머지 필드는 그대로 유지한다.
+    입력 구조: 공통 샘플 형식 (teleop/utils/inputs.py) — body는 None일 수 있다.
+    포즈 필드만 변환하고 follow·fingers·command 등 나머지 필드는 그대로 유지한다.
     """
-    out = {"t": sample.get("t"), "body": {"joints": {}}, "hands": {}}
+    out = {"t": sample.get("t"), "command": sample.get("command"), "body": {"joints": {}}, "hands": {}, "head": None}
 
-    for name, j in sample.get("body", {}).get("joints", {}).items():
+    # 조작자 시점 포즈
+    head = sample.get("head")
+    if head is not None:
+        p, q = webxr_to_robot(head["pos"], head["quat"])
+        out["head"] = {"pos": p.tolist(), "quat": q.tolist()}
+
+    for name, j in (sample.get("body") or {}).get("joints", {}).items():
         p, q = webxr_to_robot(j["pos"], j["quat"])
         out["body"]["joints"][name] = {"pos": p.tolist(), "quat": q.tolist()}
 
-    for hand, c in sample.get("hands", {}).items():
+    for hand, c in (sample.get("hands") or {}).items():
         if c is None:
             out["hands"][hand] = None
             continue
         p, q = webxr_to_robot(c["pos"], c["quat"])
-        # 포즈 외 입력값(trigger 등)은 좌표계와 무관하므로 원본 유지
+        # 포즈 외 입력값(follow·fingers)은 좌표계와 무관하므로 원본 유지
         out["hands"][hand] = {**c, "pos": p.tolist(), "quat": q.tolist()}
 
     return out

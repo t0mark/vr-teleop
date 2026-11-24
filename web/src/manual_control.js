@@ -1,17 +1,18 @@
-// 수동 조작 (dev 모드 데스크톱 전용): VR 컨트롤러 대신 패널 입력으로 업링크 샘플을 만든다.
+// 수동 조작 (dev 모드 데스크톱 전용): VR 컨트롤러·Manus 장갑 대신 패널 입력으로 업링크 샘플을 만든다.
 //
 // 원칙: **입력 값의 출처만 다르고 코드 경로는 VR과 동일하다.**
-// PoseReader가 XRFrame에서 만드는 것과 같은 형식의 샘플을 만들어 데스크톱 뷰와 같은 RtcLink의
+// 입력 모듈(web/src/input/)이 만드는 것과 같은 공통 샘플 형식을 만들어 데스크톱 뷰와 같은 RtcLink의
 // state 채널로 보내므로, 서버(rtc_hub → pose_to_target → ik_solver → robot_controller)는 이
-// 클라이언트가 Quest인지 패널인지 구분할 수 없다.
+// 클라이언트가 VR 기기인지 패널인지 구분할 수 없다.
+// 패널 조작: grip = follow(클러치), 트리거 = 손가락 굽힘, A/B = start/stop 명령.
 //
-// 손 위치는 rest 자세 기준 오프셋 슬라이더다 — 클러치 델타 매핑은 grip 체결 순간을 앵커로 잡고
+// 손 위치는 rest 자세 기준 오프셋 슬라이더다 — 클러치 델타 매핑은 follow 체결 순간을 앵커로 잡고
 // 이후의 델타만 이식하므로, grip을 켠 채 슬라이더를 움직인 거리가 곧 로봇 TCP의 이동 거리(1m=1m)가 된다.
-// body 조인트(어깨·팔꿈치)는 tools/fake_vr_quest3.py와 같은 근사로 합성한다.
+// body 조인트(어깨·팔꿈치)는 tools/fake_vr_client.py와 같은 근사로 합성한다.
 
 // 송신 주기(ms): 서버 IK 30Hz와 같은 급이면 충분
 const SEND_INTERVAL_MS = 33;
-// 사람 기하 (WebXR: x=우, y=상, -z=전방, m) — fake_vr_quest3.py와 동일한 값
+// 사람 기하 (WebXR: x=우, y=상, -z=전방, m) — fake_vr_client.py와 동일한 값
 const SHOULDER_Y = 1.4;
 const HAND_REST = { right: [0.3, 1.0, -0.25], left: [-0.3, 1.0, -0.25] };
 // 키보드 홀드 이동 속도: 손 오프셋(m/s), 트리거 램프(1/s)
@@ -19,12 +20,24 @@ const KEY_MOVE_RATE = 0.15;
 const KEY_TRIGGER_RATE = 2.5;
 // 오프셋 한계 (슬라이더 범위와 동일)
 const OFFSET_LIMIT = 0.3;
+// 트리거 하나로 굽히는 손가락 자유도 수 (little·ring·middle·index·thumb_bend)
+const TRIGGER_CURL_DOF = 5;
+// 엄지 회전 고정값: 1.0 = 손바닥 쪽으로 완전 대향 (트리거로 쥘 때 엄지가 손가락과 맞물리는 자세)
+const THUMB_ROTATE_FIXED = 1.0;
 // 이동 키 → 오프셋 축·부호 (Shift 없음 = 오른손, Shift = 왼손. z는 +가 앞)
 const MOVE_KEYS = {
     KeyW: [2, +1], KeyS: [2, -1],   // 앞/뒤
     KeyA: [0, -1], KeyD: [0, +1],   // 좌/우
     KeyR: [1, +1], KeyF: [1, -1],   // 위/아래
 };
+
+/**
+ * 트리거 값(0-1)을 공통 형식 손가락 굽힘 6개로 변환해 반환한다.
+ */
+function triggerToFingers(trigger) {
+    const curl = Math.min(1, Math.max(0, trigger));
+    return [...new Array(TRIGGER_CURL_DOF).fill(curl), THUMB_ROTATE_FIXED];
+}
 
 export class ManualControl {
     /**
@@ -48,9 +61,8 @@ export class ManualControl {
         // 키보드 홀드 상태: 이동 {code: side}, 트리거 {side}
         this._heldMoves = new Map();
         this._heldTriggers = new Set();
-        // 버튼 래치: 순간 클릭이 송신 틱(33ms) 사이에 끼어 눌린 샘플이 0개가 되는 것 방지 —
-        // 누르는 순간부터 최소 이 횟수만큼은 눌린 상태로 송신을 보장한다 (서버 에지 감지용)
-        this._pressHold = { a: 0, b: 0 };
+        // 누른 순간 생긴 명령(start/stop): 다음 송신 샘플 1개에 실어 보내고 비운다
+        this._pendingCommand = null;
         this._bindDom();
         this._bindKeyboard();
     }
@@ -99,7 +111,7 @@ export class ManualControl {
         document.getElementById(`mpGrip-${side}`).checked = this._state.grip[side];
     }
 
-    /** 트리거(0-1, 그리퍼 개폐)를 설정한다. 반환값 없음. */
+    /** 트리거(0-1, 손가락 굽힘)를 설정한다. 반환값 없음. */
     setTrigger(side, value) {
         this._state.trigger[side] = Math.min(1, Math.max(0, value));
         document.getElementById(`mpTrig-${side}`).value = this._state.trigger[side];
@@ -113,52 +125,49 @@ export class ManualControl {
         document.getElementById(`mpZ-${side}`).value = dz;
     }
 
-    /** A/B 버튼 눌림을 설정한다 (누르는 동안 true — 서버가 상승 에지를 감지한다). 반환값 없음.
-
-     * 순간 클릭도 서버에 반드시 도달하도록, 누름 시작 시 최소 6샘플(약 0.2초)의 눌린 송신을 보장한다.
-     */
+    /** A/B 버튼 눌림을 설정한다. 누르는 순간(상승 에지) A=start, B=stop 명령을 1회 예약한다. 반환값 없음. */
     setButton(name, pressed) {
+        const wasPressed = this._state[name];
         this._state[name] = Boolean(pressed);
-        if (pressed) this._pressHold[name] = 6;
+        if (this._state[name] && !wasPressed) {
+            this._pendingCommand = name === "a" ? "start" : "stop";
+            console.log(`[manual] 명령 예약: ${this._pendingCommand}`);
+        }
     }
 
-    // ── 샘플 생성 (PoseReader.read()와 동일 형식) ───────────────────────────
+    // ── 샘플 생성 (입력 모듈과 동일한 공통 형식) ────────────────────────────
 
     /**
-     * 현재 조작 상태로 업링크 샘플 1개를 만들어 반환한다.
+     * 현재 조작 상태로 공통 형식 업링크 샘플 1개를 만들어 반환한다.
      */
     _sample() {
-        // 버튼 래치 소모: 실제 눌림 또는 잔여 래치가 있으면 눌린 것으로 송신
-        const aActive = this._state.a || this._pressHold.a > 0;
-        const bActive = this._state.b || this._pressHold.b > 0;
-        this._pressHold.a = Math.max(0, this._pressHold.a - 1);
-        this._pressHold.b = Math.max(0, this._pressHold.b - 1);
+        // 예약된 명령은 이 샘플 1개에만 싣고 비운다
+        const command = this._pendingCommand;
+        this._pendingCommand = null;
 
         const hands = {};
         for (const side of ["left", "right"]) {
             const rest = HAND_REST[side];
             const [dx, dy, dz] = this._state.offset[side];
-            const trigger = this._state.trigger[side];
-            const grip = this._state.grip[side];
             hands[side] = {
                 // 슬라이더 dz(+앞)를 WebXR 전방(-z)으로 변환
                 pos: [rest[0] + dx, rest[1] + dy, rest[2] - dz],
                 quat: [0, 0, 0, 1],
-                trigger,
-                squeeze: grip ? 1 : 0,
-                // xr-standard 버튼 순서: 0=trigger, 1=squeeze, 4=A/X, 5=B/Y
-                buttons: [
-                    trigger > 0.5 ? 1 : 0, grip ? 1 : 0, 0, 0,
-                    side === "right" && aActive ? 1 : 0,
-                    side === "right" && bActive ? 1 : 0,
-                ],
+                follow: this._state.grip[side],
+                fingers: triggerToFingers(this._state.trigger[side]),
             };
         }
-        return { t: performance.now(), body: { joints: this._bodyJoints(hands) }, hands };
+        const joints = this._bodyJoints(hands);
+        return {
+            t: performance.now(),
+            hands,
+            command,
+            body: { supported: true, jointCount: Object.keys(joints).length, joints },
+        };
     }
 
     /**
-     * 어깨·팔꿈치 등 body 조인트를 손 위치와 정합되게 합성해 반환한다 (fake_vr_quest3와 동일 근사).
+     * 어깨·팔꿈치 등 body 조인트를 손 위치와 정합되게 합성해 반환한다 (fake_vr_client와 동일 근사).
      */
     _bodyJoints(hands) {
         const identity = [0, 0, 0, 1];
@@ -275,7 +284,7 @@ export class ManualControl {
             this.setOffset(side, offset[0], offset[1], offset[2]);
         }
 
-        // 트리거: 홀드면 1로, 놓으면 0으로 램프 (그리퍼가 서서히 여닫힘)
+        // 트리거: 홀드면 1로, 놓으면 0으로 램프 (손가락이 서서히 굽혀지고 펴짐)
         for (const side of ["left", "right"]) {
             const goal = this._heldTriggers.has(side) ? 1 : 0;
             const cur = this._state.trigger[side];

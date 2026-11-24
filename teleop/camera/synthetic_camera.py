@@ -1,10 +1,10 @@
 """합성 RGB-D 소스: D455 없이 FrameSource 계약을 구현한다 (dev 모드용 D455Camera 대체).
 
-고정 장면(벽 + 바닥)에 움직이는 구를 합성해 프레임을 만든다 — 포인트클라우드 파이프라인이
+고정 장면(벽 + 바닥)에 움직이는 구를 합성해 프레임을 만든다 — 인식(메시 재구성) 파이프라인이
 "프레임마다 달라지는 유효 깊이"를 처리하는 것을 눈으로 확인할 수 있게 정적인 장면을 피한다.
 
 좌표계: 광학 프레임 (x=우, y=하, z=전방, 단위 m). depth는 z-깊이(광축 방향 거리)로,
-소비자(PointCloudBuilder)의 역투영 p = z·((u−ppx)/fx, (v−ppy)/fy, 1) 규약과 일치한다.
+소비자(perception DepthProjector)의 역투영 p = z·((u−ppx)/fx, (v−ppy)/fy, 1) 규약과 일치한다.
 내부 파라미터는 D455 640x480 근사값(fx=fy=385)을 쓴다.
 """
 
@@ -60,7 +60,7 @@ class SyntheticCamera(FrameSource):
         """
         h, w = self._height, self._width
         depth = np.full((h, w), _WALL_DEPTH, dtype=np.float32)
-        # 벽 색: 체커보드 — 깊이가 같아도 픽셀이 구분되어 포인트클라우드 색 경로 확인이 쉽다
+        # 벽 색: 체커보드 — 깊이가 같아도 픽셀이 구분되어 메시 색 경로 확인이 쉽다
         checker = ((np.arange(w)[None, :] // 40 + np.arange(h)[:, None] // 40) % 2).astype(np.uint8)
         color = np.empty((h, w, 3), dtype=np.uint8)
         color[..., 0] = 90 + checker * 60

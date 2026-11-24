@@ -13,15 +13,15 @@
 //
 // 표시 모드
 // - "all": 전 링크 표시 (데스크톱 모니터링·데모)
-// - "arms": 팔 계통만 표시 (VR 로봇 시점 — 시점이 머리 안에 있어 몸통·머리 메시를 그리면
-//   내부 면이 화면을 덮는다. 팔·그리퍼는 남겨야 조작 감각과 그리퍼 위치 확인이 된다)
+// - "body": 머리 링크·카메라만 숨김 (VR 로봇 시점 — 시점이 머리 카메라 위치라 머리 메시가 시야를 가린다.
+//   팔·손·몸통은 보여 조작자가 로봇 자신을 본다)
+// - "none": 메시 숨김 (링크 변환과 머리 카메라 앵커는 그대로 갱신)
 
-// 로봇 base = 씬 원점. 포인트클라우드 등 로봇 기준 표시물이 같은 원점을 공유한다
+// 로봇 base = 씬 원점. 재구성 메시 등 로봇 기준 표시물이 같은 원점을 공유한다
 // (사람 아바타만 HUMAN_OFFSET 만큼 옆에 세운다)
 export const ROBOT_OFFSET = { x: 0, y: 0, z: 0 };
-
-// 팔 계통 링크 판별: 양팔 체인(link_*_arm_*), 그리퍼(ee_*, ee_finger_*), 손목 FT 센서
-const ARM_LINK_PATTERN = /_arm_\d|^ee_|^FT_sensor/;
+// 머리 링크 이름 접두사 ("body" 표시 모드에서 숨기는 대상)
+const HEAD_LINK_PREFIX = "link_head_";
 
 export class RobotView {
     /**
@@ -54,7 +54,8 @@ export class RobotView {
 
         const jobs = [];
         for (const [name, info] of Object.entries(cfg.links)) {
-            jobs.push(this._buildLink(name, info, cfg.mesh_base));
+            // 링크별 mesh_base가 있으면 그것을 쓴다 (손 메시는 로봇 공통 메시 폴더 밖에 있다)
+            jobs.push(this._buildLink(name, info, info.mesh_base ?? cfg.mesh_base));
         }
         if (cfg.camera) jobs.push(this._buildCamera(cfg.camera));
         await Promise.allSettled(jobs);
@@ -128,13 +129,14 @@ export class RobotView {
     }
 
     /**
-     * 표시 모드를 전환한다. mode: "all"(전체) 또는 "arms"(팔 계통만). 반환값 없음.
+     * 표시 모드를 전환한다. mode: "all"(전체), "body"(머리 링크·카메라 제외), "none"(숨김). 반환값 없음.
      * 링크 변환 노드는 그대로 두고 메시 노드만 끄므로, 숨긴 상태에서도 FK 체인과 시점 앵커는 유효하다.
      */
     setVisibleParts(mode) {
         this._mode = mode;
         for (const [name, node] of this._meshNodes) {
-            node.setEnabled(mode === "all" || ARM_LINK_PATTERN.test(name));
+            const isHead = name === "camera" || name.startsWith(HEAD_LINK_PREFIX);
+            node.setEnabled(mode === "all" || (mode === "body" && !isHead));
         }
     }
 

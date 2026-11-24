@@ -1,7 +1,8 @@
-"""RealSense D455 캡처: 장치를 1회 열고 백그라운드 스레드에서 depth·color를 받아 최신 프레임을 보관한다.
+"""RealSense D455 캡처: 장치를 열고 백그라운드 스레드에서 depth·color를 받아 최신 프레임을 보관한다.
+장치가 끊기면(USB 재연결 등) 캡처 스레드가 파이프라인을 다시 열 때까지 재시도한다.
 
 pyrealsense2 wait_for_frames는 블로킹이라 asyncio 루프 밖(스레드)에서 돌리고,
-소비자(포인트클라우드·영상 스트림)는 latest()로 스냅샷만 가져간다. depth는 color에 정렬해 두므로
+소비자(인식 서비스)는 latest()로 스냅샷만 가져간다. depth는 color에 정렬해 두므로
 같은 픽셀 좌표로 색상·깊이를 함께 쓸 수 있다 (한 번 정렬해 모든 소비자가 공유).
 """
 
@@ -46,23 +47,8 @@ class D455Camera(FrameSource):
         return self._intrinsics
 
     def start(self):
-        """장치를 열고 캡처 스레드를 시작한다. 반환값 없음."""
-        cfg = rs.config()
-        cfg.enable_stream(rs.stream.depth, self._width, self._height, rs.format.z16, self._fps)
-        cfg.enable_stream(rs.stream.color, self._width, self._height, rs.format.rgb8, self._fps)
-        self._pipeline = rs.pipeline()
-        profile = self._pipeline.start(cfg)
-
-        # depth 원시값(uint16)을 m로 바꾸는 스케일과, 정렬 기준(color) 내부 파라미터를 1회 확보
-        self._depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
-        intr = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
-        self._intrinsics = Intrinsics(intr.width, intr.height, intr.fx, intr.fy, intr.ppx, intr.ppy)
-
-        dev = profile.get_device()
-        logger.info(
-            f"D455 시작: {dev.get_info(rs.camera_info.serial_number)} "
-            f"{self._width}x{self._height}@{self._fps}, fx={intr.fx:.1f} fy={intr.fy:.1f}"
-        )
+        """장치를 열고 캡처 스레드를 시작한다. 반환값 없음 (장치를 열 수 없으면 RuntimeError)."""
+        self._open_pipeline()
 
         self._running = True
         self._stats_t = time.monotonic()
@@ -73,12 +59,63 @@ class D455Camera(FrameSource):
         """캡처 스레드를 멈추고 파이프라인을 닫는다. 반환값 없음."""
         self._running = False
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            # 재연결 대기 중이면 한 주기가 끝날 때까지 기다린다
+            self._thread.join(timeout=config.CAMERA_RECONNECT_S + 3.0)
             self._thread = None
-        if self._pipeline is not None:
-            self._pipeline.stop()
-            self._pipeline = None
+        self._close_pipeline()
         logger.info("D455 정지")
+
+    def _open_pipeline(self):
+        """파이프라인을 열고 depth 스케일·내부 파라미터를 확보한다. 반환값 없음 (실패 시 RuntimeError)."""
+        cfg = rs.config()
+        cfg.enable_stream(rs.stream.depth, self._width, self._height, rs.format.z16, self._fps)
+        cfg.enable_stream(rs.stream.color, self._width, self._height, rs.format.rgb8, self._fps)
+        pipeline = rs.pipeline()
+        profile = pipeline.start(cfg)
+        self._pipeline = pipeline
+
+        # depth 원시값(uint16)을 m로 바꾸는 스케일과, 정렬 기준(color) 내부 파라미터 확보
+        self._depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+        intr = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
+        self._intrinsics = Intrinsics(intr.width, intr.height, intr.fx, intr.fy, intr.ppx, intr.ppy)
+
+        dev = profile.get_device()
+        logger.info(
+            f"D455 시작: {dev.get_info(rs.camera_info.serial_number)} "
+            f"{self._width}x{self._height}@{self._fps}, fx={intr.fx:.1f} fy={intr.fy:.1f}"
+        )
+
+    def _close_pipeline(self):
+        """파이프라인을 닫는다 (이미 끊긴 장치의 정지 오류는 무시). 반환값 없음."""
+        if self._pipeline is None:
+            return
+        try:
+            self._pipeline.stop()
+        except RuntimeError:
+            pass
+        self._pipeline = None
+
+    def _reconnect(self):
+        """파이프라인을 닫고 다시 열릴 때까지 CAMERA_RECONNECT_S 간격으로 재시도한다. 반환값 없음.
+
+        재시도 실패 로그는 끊김 1회당 한 번만 남긴다 (장치가 오래 빠져 있어도 로그가 쌓이지 않게).
+        """
+        self._close_pipeline()
+        failures = 0
+        while self._running:
+            time.sleep(config.CAMERA_RECONNECT_S)
+            try:
+                self._open_pipeline()
+            except RuntimeError as e:
+                if failures == 0:
+                    logger.warning(f"D455 재연결 실패, {config.CAMERA_RECONNECT_S:.0f}초 간격으로 계속 재시도: {e}")
+                failures += 1
+                continue
+
+            logger.info(f"D455 재연결 완료 (재시도 {failures + 1}회)")
+            self._stats_count = 0
+            self._stats_t = time.monotonic()
+            return
 
     def latest(self) -> RGBDFrame | None:
         """최신 정렬 프레임 스냅샷을 반환한다 (없으면 None)."""
@@ -88,10 +125,12 @@ class D455Camera(FrameSource):
     def _capture_loop(self):
         """프레임을 받아 정렬·변환 후 최신 프레임을 교체한다 (스레드 본체)."""
         while self._running:
+            # 수신 실패(장치 끊김·타임아웃)면 파이프라인을 다시 연다
             try:
                 frames = self._pipeline.wait_for_frames(timeout_ms=2000)
             except RuntimeError as e:
-                logger.warning(f"프레임 대기 실패: {e}")
+                logger.warning(f"D455 프레임 수신 실패, 재연결 시작: {e}")
+                self._reconnect()
                 continue
 
             # depth를 color 화소 격자에 정렬 — 소비자들이 같은 (u, v)로 색·깊이를 함께 쓰기 위함

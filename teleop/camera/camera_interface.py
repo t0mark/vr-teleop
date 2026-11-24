@@ -1,4 +1,4 @@
-"""RGB-D 프레임 소스 추상 인터페이스: 캡처 구현(D455 등)과 소비자(stream·depth_to_3d)를 분리한다."""
+"""RGB-D 프레임 소스 추상 인터페이스: 캡처 구현(D455 등)과 소비자(perception)를 분리한다."""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass

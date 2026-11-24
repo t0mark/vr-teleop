@@ -19,14 +19,17 @@ class JointSource(ABC):
 
     @abstractmethod
     def joint_positions(self) -> dict[str, float] | None:
-        """최신 관절값 {관절명: 각도(rad)}를 반환한다. 아직 값이 없으면 None.
+        """최신 관절값 {관절명: 각도(rad)}를 반환한다. 아직 값이 없거나 갱신이 끊겨 오래됐으면 None.
 
         URDF 관절명과 같은 이름을 써야 한다 (torso_0-5, right_arm_0-6, left_arm_0-6, head_0-1 등).
         """
 
     @abstractmethod
-    def gripper_openness(self) -> dict[str, float] | None:
-        """그리퍼 열림 정도 {left/right: 0(닫힘)-1(열림)}를 반환한다. 값이 없으면 None."""
+    def hand_fingers(self) -> dict[str, list[float]] | None:
+        """손가락 측정 굽힘 {left/right: [6] 0(펼침)-1(굽힘)}를 반환한다. 값이 없으면 None.
+
+        순서: [little, ring, middle, index, thumb_bend, thumb_rotate].
+        """
 
 
 class RobotBackend(JointSource):
@@ -71,12 +74,15 @@ class RobotBackend(JointSource):
         """명령 스트림이 열려 있으면 True."""
 
 
-class GripperBackend(ABC):
-    """그리퍼 구동 인터페이스. 본체와 별도 버스를 쓰는 로봇(RBY1)을 위해 백엔드와 분리한다."""
+class HandBackend(ABC):
+    """다지 손 구동 인터페이스. 본체와 별도 버스를 쓰는 손(RH56E2 등)을 위해 백엔드와 분리한다.
+
+    손가락 값은 굽힘 0(펼침)-1(굽힘), 순서 [little, ring, middle, index, thumb_bend, thumb_rotate].
+    """
 
     @abstractmethod
     def start(self):
-        """장치를 열고 초기화(호밍 포함)를 백그라운드에서 시작한다. 반환값 없음."""
+        """장치를 열고 초기화를 백그라운드에서 시작한다. 반환값 없음."""
 
     @abstractmethod
     def stop(self):
@@ -88,9 +94,9 @@ class GripperBackend(ABC):
         """초기화가 끝나 목표를 받을 수 있으면 True."""
 
     @abstractmethod
-    def set_openness(self, openness: dict[str, float]):
-        """목표 열림 정도 {left/right: 0-1}를 설정한다. 반환값 없음 (준비 전이면 무시)."""
+    def set_fingers(self, fingers: dict[str, list[float]]):
+        """목표 손가락 굽힘 {left/right: [6] 0-1}를 설정한다. 반환값 없음 (준비 전이면 무시)."""
 
     @abstractmethod
-    def openness(self) -> dict[str, float] | None:
-        """측정 열림 정도 {left/right: 0-1}를 반환한다. 준비 전이면 None."""
+    def fingers(self) -> dict[str, list[float]] | None:
+        """측정 손가락 굽힘 {left/right: [6] 0-1}를 반환한다. 준비 전이면 None."""

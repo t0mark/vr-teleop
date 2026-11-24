@@ -160,13 +160,13 @@
         <button id="modeBtn" hidden></button>
     </div>
 
-    <!-- 수동 조작 (dev 모드 데스크톱 전용): VR 컨트롤러와 동일한 업링크 샘플을 만들어 보낸다 -->
+    <!-- 수동 조작 (dev 모드 데스크톱 전용): VR 입력 대신 패널로 공통 형식 업링크 샘플을 만들어 보낸다 -->
     <div id="manualPanel" hidden>
         <label class="mp-title"><input type="checkbox" id="mpEnable" /> 수동 조작</label>
         <fieldset id="mpControls" disabled>
             <legend>오른손</legend>
             <label><span>grip</span><input type="checkbox" id="mpGrip-right" /> 클러치</label>
-            <label><span>트리거</span><input type="range" id="mpTrig-right" min="0" max="1" step="0.01" value="0" /></label>
+            <label><span>손가락</span><input type="range" id="mpTrig-right" min="0" max="1" step="0.01" value="0" /></label>
             <label><span>옆(x)</span><input type="range" id="mpX-right" min="-0.3" max="0.3" step="0.005" value="0" /></label>
             <label><span>높이(y)</span><input type="range" id="mpY-right" min="-0.3" max="0.3" step="0.005" value="0" /></label>
             <label><span>앞(z)</span><input type="range" id="mpZ-right" min="-0.3" max="0.3" step="0.005" value="0" /></label>
@@ -174,7 +174,7 @@
         <fieldset id="mpControlsL" disabled>
             <legend>왼손</legend>
             <label><span>grip</span><input type="checkbox" id="mpGrip-left" /> 클러치</label>
-            <label><span>트리거</span><input type="range" id="mpTrig-left" min="0" max="1" step="0.01" value="0" /></label>
+            <label><span>손가락</span><input type="range" id="mpTrig-left" min="0" max="1" step="0.01" value="0" /></label>
             <label><span>옆(x)</span><input type="range" id="mpX-left" min="-0.3" max="0.3" step="0.005" value="0" /></label>
             <label><span>높이(y)</span><input type="range" id="mpY-left" min="-0.3" max="0.3" step="0.005" value="0" /></label>
             <label><span>앞(z)</span><input type="range" id="mpZ-left" min="-0.3" max="0.3" step="0.005" value="0" /></label>
@@ -185,7 +185,7 @@
         </div>
         <div class="mp-keys">
             키보드: <b>M</b> 활성 · <b>W/S</b> 앞뒤 <b>A/D</b> 좌우 <b>R/F</b> 위아래 (홀드,
-            <b>Shift</b>=왼손) · <b>G</b> grip · <b>T</b> 트리거 · <b>Enter</b>=A
+            <b>Shift</b>=왼손) · <b>G</b> grip(follow) · <b>T</b> 트리거(손가락) · <b>Enter</b>=A
             <b>⌫</b>=B
         </div>
     </div>

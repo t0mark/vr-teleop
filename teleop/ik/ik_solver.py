@@ -1,4 +1,4 @@
-"""양팔 IK 솔버: EE(그리퍼) 포즈 + 팔꿈치 방향 트래킹. CasADi 심볼릭 FK 기반 NLP를 warm start로 푼다.
+"""양팔 IK 솔버: EE(손) 포즈 + 팔꿈치 방향 트래킹. CasADi 심볼릭 FK 기반 NLP를 warm start로 푼다.
 
 정식화:
     min_q  Σ_arm [ w_pos·|p_tcp(q) - p_target|² + w_rot·|R_ee(q) - R_target|²_F
@@ -6,7 +6,7 @@
            + w_reg·|q - q_prev|² + w_ready·|q - q_ready|²
     s.t.   q_lower ≤ q ≤ q_upper (URDF ∩ 안전 한계)
 
-- p_tcp: 그리퍼 TCP(집는 지점, ee 로컬 GRIPPER_TCP_OFFSET) — 손 위치가 여기에 대응된다
+- p_tcp: 손 TCP(파지 중심, ee 로컬 HAND_TCP_OFFSET) — 손 위치가 여기에 대응된다
 - 자세는 회전행렬 Frobenius 오차 (log6는 오차 0에서 미분 NaN이라 배제)
 - 팔꿈치 코스트: 어깨→팔꿈치 벡터를 목표(사람 팔 방향×로봇 상완)에 정렬. 가중치를
   파라미터로 받아 목표가 없으면(w=0) 자동 비활성 — 그때는 ready 바이어스가 여유 자유도 해소
@@ -55,11 +55,11 @@ class ArmIkSolver:
         for side in ("left", "right"):
             ids = self._rm.frame_ids[side]
 
-            # EE 목표: 4x4 동차 행렬 파라미터. 위치는 그리퍼 TCP 기준
+            # EE 목표: 4x4 동차 행렬 파라미터. 위치는 손 TCP 기준
             T_target = casadi.SX.sym(f"T_{side}", 4, 4)
             params.append(casadi.vec(T_target))
             M_wrist = cdata.oMf[ids["wrist"]]
-            p_tcp = M_wrist.translation + M_wrist.rotation @ casadi.SX(list(config.GRIPPER_TCP_OFFSET))
+            p_tcp = M_wrist.translation + M_wrist.rotation @ casadi.SX(list(config.HAND_TCP_OFFSET))
             cost += config.IK_W_POS * casadi.sumsqr(p_tcp - T_target[:3, 3])
             cost += config.IK_W_ROT * casadi.sumsqr(M_wrist.rotation - T_target[:3, :3])
 

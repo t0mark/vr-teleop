@@ -1,7 +1,7 @@
 // Babylon.js 기본 씬 구성: 엔진, 데스크톱용 궤도 카메라, 바닥 그리드, 원점 축.
 // 좌표계: Babylon 기본(왼손, y-up)을 유지한다. 오른손 모드로 바꾸면 카메라 전방이 -z가 되어
 // 카메라에 고정한 HUD(+z 배치)가 뒤로 가는 문제가 있음. WebXR 포즈(오른손)의 표시 변환은
-// 표시 단계에서 z 반전으로 처리한다 (robot_view·human_view·pointcloud_view 공통 규약).
+// 표시 단계에서 z 반전으로 처리한다 (robot_view·human_view·mesh_view 공통 규약).
 
 /**
  * 엔진과 씬을 생성해 { engine, scene } 을 반환한다.

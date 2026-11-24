@@ -12,3 +12,6 @@ code.md
 
 # 사전 압축 산출물 (서버 기동 시 생성)
 *.gz
+
+_tmp/
+reference/

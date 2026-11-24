@@ -22,7 +22,7 @@ import time
 
 import numpy as np
 
-from teleop.robot.robot_interface import GripperBackend, RobotBackend
+from teleop.robot.robot_interface import HandBackend, RobotBackend
 from teleop.utils import config
 
 logger = logging.getLogger("rby1")
@@ -39,17 +39,20 @@ class Rby1Backend(RobotBackend):
     """rby1-sdk 연결, 최신 관절 측정값, 명령 스트림을 소유한다."""
 
     def __init__(self, address: str = config.ROBOT_ADDRESS, rate_hz: float = config.ROBOT_STATE_RATE_HZ,
-                 gripper: GripperBackend | None = None):
-        """gripper: 측정 열림 정도를 대신 제공할 그리퍼 백엔드 (본체 gRPC에는 그리퍼 값이 없다)."""
+                 hand: HandBackend | None = None):
+        """hand: 측정 손가락 굽힘을 대신 제공할 손 백엔드 (본체 gRPC에는 손 값이 없다)."""
         self._address = address
         self._rate_hz = rate_hz
-        self._gripper = gripper
+        self._hand = hand
         self._rby = None
         self._robot = None
         self._stream = None
         self._joint_names: list[str] = []
         self._lock = threading.Lock()
         self._positions: dict[str, float] | None = None
+        # 마지막 상태 수신 시각(monotonic, 수신 전 0.0)과 두절 로그 중복 방지 플래그
+        self._state_rx_mono = 0.0
+        self._state_stale_logged = False
         self._connected = False
         self._velocity_limits: dict[str, float] = {}
         # 머리 PID 게인은 연결당 1회만 적용한다 (적용에 CM 비활성이 필요해 반복하면 제어가 끊긴다)
@@ -142,48 +145,34 @@ class Rby1Backend(RobotBackend):
             return
         with self._lock:
             self._positions = positions
+            self._state_rx_mono = time.monotonic()
 
     def joint_positions(self) -> dict[str, float] | None:
-        """최신 관절값 스냅샷을 반환한다 (아직 수신 전이면 None)."""
+        """최신 관절값 스냅샷을 반환한다 (수신 전이거나 ROBOT_STATE_STALE_S 넘게 갱신이 없으면 None)."""
         with self._lock:
-            return dict(self._positions) if self._positions is not None else None
+            if self._positions is None:
+                return None
+            age = time.monotonic() - self._state_rx_mono
+            stale = age > config.ROBOT_STATE_STALE_S
 
-    def gripper_openness(self) -> dict[str, float] | None:
-        """그리퍼 측정 열림 정도를 반환한다 (그리퍼 백엔드가 없거나 준비 전이면 None).
+            # 두절·복구 전이를 1회씩 로그로 남긴다
+            if stale and not self._state_stale_logged:
+                logger.warning(f"로봇 상태 수신 두절: {age:.2f}초 경과 — 측정값 무효")
+                self._state_stale_logged = True
+            elif not stale and self._state_stale_logged:
+                logger.info("로봇 상태 수신 복구")
+                self._state_stale_logged = False
 
-        RBY1 그리퍼는 본체 gRPC가 아니라 별도 Dynamixel 버스에 있어 그리퍼 백엔드에 위임한다.
+            return None if stale else dict(self._positions)
+
+    def hand_fingers(self) -> dict[str, list[float]] | None:
+        """손가락 측정 굽힘을 반환한다 (손 백엔드가 없거나 준비 전이면 None).
+
+        손은 본체 gRPC가 아니라 별도 버스에 있어 손 백엔드에 위임한다.
         """
-        if self._gripper is None:
+        if self._hand is None:
             return None
-        return self._gripper.openness()
-
-    def power_tool_flange(self, voltage: int = config.GRIPPER_TOOL_VOLTAGE) -> bool:
-        """양쪽 툴 플랜지 출력 전압을 켠다 (그리퍼 Dynamixel 전원). 반환: 양쪽 모두 성공 여부.
-
-        그리퍼 버스는 이 전원이 들어와야 응답한다 (custom-teleop과 동일 순서: 전압 공급 → 버스 초기화).
-        """
-        if self._robot is None:
-            return False
-        # 로봇 전원 투입 직후에는 설정 호출이 True를 돌려줘도 실제 출력이 0V로 남는다 — 상태로 확인하며 재시도
-        deadline = time.monotonic() + config.GRIPPER_POWER_TIMEOUT_S
-        while True:
-            pending = []
-            for arm in ("left", "right"):
-                try:
-                    flange = getattr(self._robot.get_state(), f"tool_flange_{arm}")
-                    if flange.output_voltage == voltage:
-                        continue
-                    self._robot.set_tool_flange_output_voltage(arm, voltage)
-                except Exception as e:
-                    logger.warning(f"툴 플랜지 {arm} 전압 설정 예외: {e!r}")
-                pending.append(arm)
-            if not pending:
-                logger.info(f"툴 플랜지 양쪽 {voltage}V 공급 확인 (그리퍼 전원)")
-                return True
-            if time.monotonic() > deadline:
-                logger.error(f"툴 플랜지 {pending} {voltage}V 공급 실패 (출력 전압 미반영)")
-                return False
-            time.sleep(1.0)
+        return self._hand.fingers()
 
     # ── 제어 준비 ────────────────────────────────────────────────────────────
 
