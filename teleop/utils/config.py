@@ -123,8 +123,8 @@ ARM_SCALE = 1.0
 # (공유 모드가 PC를 10.42.0.1로 고정하고 Quest에 DHCP 할당). 인증서 SAN 기본값으로도 사용
 DIRECT_LINK_SERVER_IP = "10.42.0.1"
 
-# 실로봇 gRPC 주소
-ROBOT_ADDRESS = "192.168.30.1:50051"
+# 실로봇 gRPC 주소 (로봇 내장 PC의 mDNS 호스트명)
+ROBOT_ADDRESS = "rby1.local:50051"
 # 상태 구독·시각화 방송 주기(Hz)
 ROBOT_STATE_RATE_HZ = 30.0
 # 상태 구독 신선도 한계(초): 마지막 수신 후 이 시간이 지나면 측정값 무효
